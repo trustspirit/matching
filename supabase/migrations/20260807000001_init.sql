@@ -18,7 +18,17 @@ create table public.participants (
   -- (name, birthdate) is unique across all 279 participants in the source data,
   -- which is why it is the identity key rather than email. Three pairs of
   -- participants share an email address.
-  constraint participants_identity_key unique (name, birthdate)
+  constraint participants_identity_key unique (name, birthdate),
+  -- import_matches() treats an empty string for code_salt/code_hash as
+  -- "keep whatever this participant already has", and resolves that sentinel
+  -- against the existing row before the INSERT is attempted, so an
+  -- upsert of an existing participant always writes back the existing
+  -- non-empty value and never violates this constraint. For a brand-new
+  -- participant there is no existing row to fall back to, so an empty
+  -- sentinel would otherwise be written verbatim and that participant could
+  -- never log in, since no real code hashes to an empty string. This
+  -- constraint is what makes the sentinel safe to use.
+  constraint participants_code_not_empty check (code_salt <> '' and code_hash <> '')
 );
 
 create index participants_name_idx on public.participants (name);

@@ -14,7 +14,7 @@ values
   ('정예림', '정예림', '2004-03-04', 'F', '010-3793-8478', 'yljun3064@example.com',
    'devsalt', encode(digest('devsaltTESTA3', 'sha256'), 'hex')),
 
-  -- Case 2: ordinary 2부 pair with a team assigned
+  -- Participant in the Case 4 match below (team still undecided with 윤모습)
   ('박한서', '박한서', '2002-05-11', 'M', '010-1111-2222', 'hanseo@example.com',
    'devsalt', encode(digest('devsaltTESTA4', 'sha256'), 'hex')),
 
@@ -25,7 +25,9 @@ values
   ('엄태건', '엄태건', '2000-09-02', 'M', '010-5555-6666', 'etg@example.com',
    'devsalt', encode(digest('devsaltTESTA6', 'sha256'), 'hex')),
 
-  -- Case 5: two different people who share a name (distinct birthdates + codes)
+  -- Case 5: two different people who share a name (distinct birthdates + codes).
+  -- The second one (1995-09-07), paired with 김은해 below, is also Case 2:
+  -- ordinary 2부 pair with a team assigned.
   ('김시현', '김시현', '2001-04-11', 'M', '010-8697-1910', 'shared@example.com',
    'devsalt', encode(digest('devsaltTESTA7', 'sha256'), 'hex')),
   ('김시현', '김시현', '1995-09-07', 'M', '010-6767-8405', 'shared@example.com',
@@ -39,6 +41,7 @@ values
   ('이승준', '이승준', '1998-12-14', 'M', '010-8521-0025', 'skyjune98@example.com',
    'devsalt', encode(digest('devsaltTESTAC', 'sha256'), 'hex'));
 
+-- Case 1: ordinary 1부 pair with a team assigned
 insert into public.matches (session, time_range, arrive_by, venue, team, male_id, female_id)
 select '1부', '21:50~22:20', '21:50', '소극장', '3조', m.id, f.id
 from public.participants m, public.participants f
@@ -62,6 +65,7 @@ select '1부', '21:50~22:20', '21:50', '마루', '2조', m.id, f.id
 from public.participants m, public.participants f
 where m.name = '김시현' and m.birthdate = '2001-04-11' and f.name = '윤해서';
 
+-- Case 5 continued (second 김시현) and Case 2: ordinary 2부 pair with a team assigned
 insert into public.matches (session, time_range, arrive_by, venue, team, male_id, female_id)
 select '2부', '22:40~23:00', '22:40', '마루', '4조', m.id, f.id
 from public.participants m, public.participants f
