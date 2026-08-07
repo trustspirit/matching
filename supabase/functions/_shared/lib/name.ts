@@ -16,5 +16,13 @@ export const NAME_ALIASES: Record<string, string> = {
 /** Produces the stable key used for participant lookup. */
 export function normalizeName(input: string): string {
   const base = input.normalize("NFC").replace(/\s+/g, "").toLowerCase();
-  return NAME_ALIASES[base] ?? base;
+  // NAME_ALIASES is a plain object literal, so it inherits from
+  // Object.prototype. A bare `NAME_ALIASES[base]` lookup can return an
+  // inherited value (e.g. base === "constructor" or "__proto__") instead of
+  // undefined, silently bypassing the `?? base` fallback. Guard with
+  // hasOwn so only the table's own entries are ever returned.
+  const alias = Object.hasOwn(NAME_ALIASES, base)
+    ? NAME_ALIASES[base]
+    : undefined;
+  return alias ?? base;
 }

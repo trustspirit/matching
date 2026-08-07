@@ -34,4 +34,27 @@ describe("normalizeName", () => {
       expect(key).toBe(key.normalize("NFC").replace(/\s+/g, "").toLowerCase());
     }
   });
+
+  it("does not read through the Object.prototype chain", () => {
+    // NAME_ALIASES is a plain object literal, so a bare index lookup would
+    // otherwise return an inherited value (a function/object) for these
+    // inputs instead of falling through to the normalized input string.
+    expect(normalizeName("constructor")).toBe("constructor");
+    expect(normalizeName("__proto__")).toBe("__proto__");
+    expect(typeof normalizeName("constructor")).toBe("string");
+    expect(typeof normalizeName("__proto__")).toBe("string");
+  });
+
+  it("is idempotent", () => {
+    const inputs = [
+      " 김 효 준 ",
+      "Flores, Romrik Joshua",
+      "이승호- lee Seung ho",
+      "정예림",
+    ];
+    for (const input of inputs) {
+      const once = normalizeName(input);
+      expect(normalizeName(once)).toBe(once);
+    }
+  });
 });
