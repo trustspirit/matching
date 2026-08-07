@@ -9,13 +9,18 @@
 -- means deny all: only service_role bypasses it", but that bypass applies to
 -- row-level security only. The coarser table-level GRANT layer still blocks
 -- service_role without an explicit grant, and Edge Functions run exclusively
--- as service_role, so every direct table query (the lookup function's
--- participants select, and rateLimit.ts's login_attempts select/insert) was
--- failing with "permission denied for table ..." even though RLS itself was
--- configured correctly.
-grant select, insert, update, delete
-  on public.participants, public.matches, public.login_attempts
-  to service_role;
-
--- login_attempts.id is bigserial; inserting a row also needs sequence usage.
-grant usage, select on all sequences in schema public to service_role;
+-- as service_role, so direct table queries were failing with "permission
+-- denied for table ..." even though RLS itself was configured correctly.
+--
+-- Grants are scoped to exactly what current Edge Function code does directly
+-- (grep the diff, not anticipated future needs): the lookup function selects
+-- candidate participants by name, and rateLimit.ts selects and inserts
+-- login_attempts rows. Nothing queries `matches` directly -- it is only ever
+-- reached through the `security definer` matches_for_participant/
+-- import_matches RPCs, which run as the function owner and need no
+-- service_role table grant at all. If a later task needs a direct write to
+-- participants or matches, that task's own migration should grant exactly
+-- what it needs then, not this one, preemptively.
+grant select on public.participants to service_role;
+grant select, insert on public.login_attempts to service_role;
+grant usage, select on public.login_attempts_id_seq to service_role;
