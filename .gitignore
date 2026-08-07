@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+.DS_Store
+*.log
+.wrangler/
+supabase/.temp/
+
+# 사용자 설정: 마크다운 문서는 커밋하지 않음
+*.md
