@@ -27,6 +27,18 @@ describe("parseCsv", () => {
   it("drops trailing blank lines", () => {
     expect(parseCsv("a,b\n1,2\n\n")).toEqual([["a", "b"], ["1", "2"]]);
   });
+
+  it("keeps an interior blank row and still drops trailing ones", () => {
+    expect(parseCsv("a,b\n\n1,2\n\n")).toEqual([["a", "b"], [""], ["1", "2"]]);
+  });
+
+  it("treats a stray quote mid-field as a literal character", () => {
+    expect(parseCsv('a,b"c,d')).toEqual([["a", 'b"c', "d"]]);
+  });
+
+  it("still opens a quoted field when the quote starts the field", () => {
+    expect(parseCsv('a,"b,c",d')).toEqual([["a", "b,c", "d"]]);
+  });
 });
 
 describe("parseMatchCsv", () => {
@@ -141,6 +153,20 @@ describe("parseMatchCsv", () => {
   it("errors when the file has no data rows", () => {
     const result = parseMatchCsv(HEADER);
     expect(result.errors.join(" ")).toContain("데이터 행");
+  });
+
+  it("still reports no data rows when the file is a header plus blank lines", () => {
+    const result = parseMatchCsv(`${HEADER}\n\n\n`);
+    expect(result.errors.join(" ")).toContain("데이터 행");
+  });
+
+  it("does not let a mid-file blank row shift later row numbers", () => {
+    const bad = ROW_1.replace("1부", "3부");
+    // header=1행, ROW_1=2행, blank=3행, bad=4행
+    const result = parseMatchCsv(`${HEADER}\n${ROW_1}\n\n${bad}`);
+    expect(result.matches).toHaveLength(1);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain("4행");
   });
 });
 

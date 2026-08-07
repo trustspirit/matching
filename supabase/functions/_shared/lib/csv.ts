@@ -15,15 +15,23 @@ export function parseCsv(text: string): string[][] {
   let row: string[] = [];
   let field = "";
   let inQuotes = false;
+  // Tracks whether any character (quote or otherwise) has already been
+  // consumed for the current field. A quote only opens a quoted field when
+  // it is the field's very first character; a quote appearing after that is
+  // kept as a literal character (RFC 4180).
+  let fieldStarted = false;
 
   const endField = () => {
     row.push(field);
     field = "";
+    fieldStarted = false;
   };
   const endRow = () => {
     endField();
-    // Skip rows that are entirely empty, e.g. a trailing newline.
-    if (row.some((cell) => cell.trim() !== "")) rows.push(row);
+    // Every physical line becomes a row here, including blank ones — the
+    // caller's index must stay aligned with the file's line numbers.
+    // Trailing blank rows are trimmed once, after the whole file is parsed.
+    rows.push(row);
     row = [];
   };
 
@@ -42,12 +50,28 @@ export function parseCsv(text: string): string[][] {
       }
       continue;
     }
-    if (ch === '"') inQuotes = true;
-    else if (ch === ",") endField();
-    else if (ch === "\n") endRow();
-    else if (ch !== "\r") field += ch;
+    if (ch === '"' && !fieldStarted) {
+      inQuotes = true;
+      fieldStarted = true;
+    } else if (ch === ",") {
+      endField();
+    } else if (ch === "\n") {
+      endRow();
+    } else if (ch !== "\r") {
+      field += ch;
+      fieldStarted = true;
+    }
   }
   endRow();
+
+  // Strip a trailing run of blank rows: the phantom row a final newline
+  // produces, plus any blank separator lines left at EOF. Interior blank
+  // rows are preserved so a row's index here stays aligned with its
+  // physical line number in the source file.
+  while (rows.length > 0 && rows[rows.length - 1]!.every((c) => c.trim() === "")) {
+    rows.pop();
+  }
+
   return rows;
 }
 
@@ -108,8 +132,15 @@ export function parseMatchCsv(text: string): ParseResult {
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i]!;
     // Row numbers are 1-based and include the header, matching what the
-    // organizer sees in Excel.
+    // organizer sees in Excel. lineNo is derived from the raw row index, not
+    // from how many data rows have been seen, so a blank separator row
+    // anywhere in the file does not shift the numbering of the rows after it.
     const lineNo = i + 1;
+
+    // A blank line (e.g. a spacer between the 1부 and 2부 blocks) carries no
+    // data and is not an error — just skip it.
+    if (row.every((c) => c.trim() === "")) continue;
+
     const rowErrors: string[] = [];
 
     const session = cell(row, "부");
