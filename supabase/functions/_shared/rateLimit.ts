@@ -28,8 +28,13 @@ export async function isRateLimited(
     .gte("attempted_at", since);
 
   // Fail open on a counting error: locking every participant out of the site
-  // during the event is worse than briefly losing the throttle.
-  if (error) return false;
+  // during the event is worse than briefly losing the throttle. Still log it
+  // so an operator can notice the throttle degraded (checked against Supabase's
+  // function logs) rather than have it fail silently.
+  if (error) {
+    console.error("rate limit check failed, failing open", error);
+    return false;
+  }
   return (count ?? 0) >= MAX_FAILURES_PER_WINDOW;
 }
 
@@ -38,5 +43,10 @@ export async function recordAttempt(
   ipHash: string,
   succeeded: boolean,
 ): Promise<void> {
-  await db.from("login_attempts").insert({ ip_hash: ipHash, succeeded });
+  const { error } = await db
+    .from("login_attempts")
+    .insert({ ip_hash: ipHash, succeeded });
+  // Log-only: a failed insert should not block the caller's response, but it
+  // should be visible in the function logs so an operator can investigate.
+  if (error) console.error("failed to record login attempt", error);
 }
