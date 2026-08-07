@@ -371,6 +371,21 @@ authorization_url_path = "/oauth/consent"
 # Allow dynamic client registration
 allow_dynamic_registration = false
 
+# Both functions are called with no Supabase-issued credential at all: lookup
+# sends no Authorization header (see apps/web/src/api/client.ts), and
+# admin-import sends "Authorization: Bearer <ADMIN_PASSWORD>", which is not a
+# JWT. Without verify_jwt = false here, the platform gateway rejects every
+# request before it reaches the function -- this is not covered by local
+# `supabase functions serve --no-verify-jwt`, so it only shows up on a real
+# deploy. Auth for lookup is the code hash comparison inside the function
+# itself; auth for admin-import is the ADMIN_PASSWORD check inside the
+# function itself. Neither depends on the platform's JWT gateway.
+[functions.lookup]
+verify_jwt = false
+
+[functions.admin-import]
+verify_jwt = false
+
 [edge_runtime]
 enabled = true
 # Supported request policies: `oneshot`, `per_worker`.

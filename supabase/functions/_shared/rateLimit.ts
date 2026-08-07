@@ -2,7 +2,15 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { hashHex } from "./hash.ts";
 
 const WINDOW_MS = 60_000;
-const MAX_FAILURES_PER_WINDOW = 5;
+// Keyed on IP alone, and the event's ~350 participants can share one egress
+// address (venue Wi-Fi, carrier CGNAT) while all logging in within minutes of
+// each other. A low threshold throttles the whole crowd on a handful of
+// unrelated mistyped codes, not just an attacker. This number isn't the
+// system's real defense against brute-forcing a code -- the 30-character,
+// 6-length alphabet (~7.29e8 combinations) and the per-candidate timing
+// equalization in hash.ts are -- so it only needs to be high enough to blunt
+// scripted abuse, not low enough to meaningfully slow a targeted guesser.
+const MAX_FAILURES_PER_WINDOW = 30;
 
 export function clientIp(req: Request): string {
   // Supabase sits behind a proxy, so the socket address is useless here.

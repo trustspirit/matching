@@ -15,8 +15,14 @@
    직접 설정하지 않는다.
 
 3) Edge Functions 배포
-   supabase functions deploy lookup
-   supabase functions deploy admin-import
+   supabase functions deploy lookup --no-verify-jwt
+   supabase functions deploy admin-import --no-verify-jwt
+
+   --no-verify-jwt가 없으면 배포된 함수가 플랫폼 게이트웨이 단계에서
+   모든 요청을 401로 거부한다. lookup과 admin-import는 Supabase가 발급한
+   JWT를 전혀 받지 않으며(각자 코드 해시 비교/ADMIN_PASSWORD로 자체 인증),
+   supabase/config.toml에도 이미 verify_jwt = false를 설정해 두었으므로
+   이 플래그는 이중 안전장치다.
 
 4) Cloudflare Pages 설정
    - 저장소: trustspirit/matching, 브랜치: main
@@ -26,20 +32,38 @@
 
 5) 배포 후 확인
    - https://<project>.pages.dev/ 접속 → 로그인 화면이 뜬다
-   - 잘못된 코드로 401이 오는지 확인
+
+   - 잘못된 코드로 앱 레벨 401이 오는지 확인 (게이트웨이 401과 구분할 것):
+       curl -s -X POST "https://<PROJECT_REF>.supabase.co/functions/v1/lookup" \
+         -H "Content-Type: application/json" \
+         -d '{"name":"존재하지않음","code":"XXXXXX"}'
+     → 정상: {"error":"invalid_credentials"} (본문에 "error" 필드가 있어야 한다)
+     → 배포 실패 신호: {"code":401,"message":"Missing authorization header"}
+       이 메시지가 나오면 --no-verify-jwt 배포가 적용되지 않은 것이다.
+       supabase functions deploy를 --no-verify-jwt와 함께 다시 실행한다.
+
    - REST 엔드포인트가 막혀 있는지 확인:
        curl "https://<PROJECT_REF>.supabase.co/rest/v1/participants?select=*" \
          -H "apikey: <ANON_KEY>"
      → 참가자 데이터가 나오면 안 된다. 나오면 RLS를 즉시 점검한다.
 
 6) 실제 데이터 투입
-   - 최종 엑셀을 CSV로 저장 (컬럼 순서는 DEPLOY 문서 상단 참고)
+   - 최종 엑셀을 CSV로 저장. 컬럼: 부, 시간, 장소, 조,
+     남성 이름/생년월일/연락처/이메일, 여성 이름/생년월일/연락처/이메일
    - /admin 접속 → 비밀번호 + CSV 업로드
    - 다운로드된 참가자_코드.csv를 안전한 곳에 보관
    - 참가자에게 이름과 코드를 전달
 
 주의
 ----
+- 업로드한 CSV가 전체 매칭을 대체한다 (증분 추가가 아니다). 조 번호
+  하나를 고치려고 해당 부(部)만 담은 CSV를 올리면 나머지 부의 매칭이
+  전부 삭제된다. 항상 전체 매칭이 담긴 CSV를 올려야 한다.
+- 참가자 자체는 삭제되지 않으므로 코드는 계속 유효하지만, 매칭이 없는
+  참가자는 로그인 시 "등록된 매칭 정보가 없습니다"로 보이게 된다.
 - 평문 코드는 업로드 응답에서만 얻을 수 있다. 서버에는 해시만 남는다.
-- 조를 추가하는 재업로드는 기존 코드를 바꾸지 않는다.
+- 조를 추가하는 재업로드(전체 매칭 CSV 기준)는 기존 코드를 바꾸지 않는다.
 - "전원 코드 재발급"을 켜면 이미 배포한 코드가 전부 무효가 된다.
+- 사전 리허설 권장: 실제 이벤트 전에 별도 프로젝트에서 실제 엑셀로
+  임포트 → 동명이인 1명·2회 참여자 1명 포함 3명 이상 로그인 → 코드 CSV를
+  엑셀로 열어 한글이 깨지지 않는지 확인한다.

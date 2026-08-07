@@ -57,11 +57,19 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const name = normalizeName(rawName);
   const code = normalizeCode(rawCode);
 
-  const { data: candidates } = await db
+  const { data: candidates, error: candidatesError } = await db
     .from("participants")
     .select("id, display_name, code_salt, code_hash")
     .eq("name", name)
     .returns<ParticipantRow[]>();
+
+  if (candidatesError) {
+    // A DB fault here must not be mistaken for "wrong code": falling through
+    // to invalid_credentials would record a failed attempt against the
+    // participant's IP and could trip the rate limiter during an outage.
+    console.error("participant lookup failed", candidatesError);
+    return jsonResponse(req, { error: "server_error" }, 500);
+  }
 
   let matched: ParticipantRow | null = null;
   for (const candidate of candidates ?? []) {

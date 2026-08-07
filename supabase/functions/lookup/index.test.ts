@@ -80,8 +80,10 @@ Deno.test("rejects an empty name", async () => {
   assertEquals(res.status, 400);
 });
 
-Deno.test("throttles after five failures from the same address", async () => {
+Deno.test("throttles after MAX_FAILURES_PER_WINDOW failures from the same address", async () => {
   // Clear the window by using a distinct forwarded address for this test.
+  // 30 matches _shared/rateLimit.ts's MAX_FAILURES_PER_WINDOW; kept as a
+  // literal here (not imported) so this test fails loudly if the two drift.
   const ip = `203.0.113.${Math.floor(Math.random() * 200) + 1}`;
   const attempt = () =>
     fetch(`${BASE}/lookup`, {
@@ -90,12 +92,12 @@ Deno.test("throttles after five failures from the same address", async () => {
       body: JSON.stringify({ name: "김효준", code: "TESTAZ" }),
     });
 
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 30; i++) {
     assertEquals((await attempt()).status, 401);
   }
-  const sixth = await attempt();
-  assertEquals(sixth.status, 429);
-  const body = await sixth.json();
+  const next = await attempt();
+  assertEquals(next.status, 429);
+  const body = await next.json();
   assertEquals(body.error, "too_many_attempts");
   assert(typeof body.retryAfter === "number");
 });

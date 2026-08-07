@@ -9,6 +9,8 @@ import { saveResult } from "../lib/session";
 const MESSAGES: Record<string, string> = {
   invalid_credentials: "이름 또는 코드가 올바르지 않습니다.",
   too_many_attempts: "시도가 너무 많습니다. 1분 후 다시 시도해주세요.",
+  invalid_request: "입력값을 확인해주세요.",
+  server_error: "서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
   network_error: "연결에 실패했습니다. 다시 시도해주세요.",
   missing_api_url: "사이트 설정이 완료되지 않았습니다. 관리자에게 문의해주세요.",
 };
