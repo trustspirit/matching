@@ -1,10 +1,12 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { createBrowserRouter, RouterProvider } from "react-router-dom";
+import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
+import { Login } from "./routes/Login";
 import "./design/tokens.css";
 
 const router = createBrowserRouter([
-  { path: "/", element: <div className="type-display-lg">랜덤 소개팅</div> },
+  { path: "/", element: <Login /> },
+  { path: "*", element: <Navigate to="/" replace /> },
 ]);
 
 createRoot(document.getElementById("root")!).render(
