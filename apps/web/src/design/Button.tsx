@@ -6,6 +6,8 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: Variant;
   fullWidth?: boolean;
   loading?: boolean;
+  /** Text shown in place of children while loading. Defaults to the login flow's copy. */
+  loadingText?: string;
   children: ReactNode;
 }
 
@@ -22,6 +24,7 @@ export function Button({
   variant = "primary",
   fullWidth = false,
   loading = false,
+  loadingText = "확인 중…",
   disabled,
   children,
   className = "",
@@ -42,7 +45,7 @@ export function Button({
         className,
       ].join(" ")}
     >
-      {loading ? "확인 중…" : children}
+      {loading ? loadingText : children}
     </button>
   );
 }
