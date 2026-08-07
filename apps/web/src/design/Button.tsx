@@ -35,7 +35,11 @@ export function Button({
       {...rest}
       disabled={disabled || loading}
       className={[
-        "type-button-md rounded-md px-[14px] transition-colors",
+        // px-lg (16px), not the source spec's 14px: Button's height is already
+        // 48px instead of the spec's 40px for touch-target reasons, so there's
+        // no exact-height pairing left to preserve, and snapping to the token
+        // scale keeps this consistent with TextInput's own padding below.
+        "type-button-md rounded-md px-lg transition-colors",
         // 48px rather than the spec's 40px: this is a phone-first page and
         // WCAG AA wants at least 44px of tappable height.
         "h-12",

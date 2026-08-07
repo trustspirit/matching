@@ -21,7 +21,8 @@ export const TextInput = forwardRef<HTMLInputElement, TextInputProps>(
           aria-invalid={error !== undefined}
           aria-describedby={error === undefined ? undefined : errorId}
           className={[
-            "type-body-md h-11 rounded-md bg-canvas px-[15px] text-ink",
+            // px-lg (16px), not the source spec's 15px -- same token-scale reasoning as Button.
+            "type-body-md h-11 rounded-md bg-canvas px-lg text-ink",
             "border placeholder:text-ash",
             error === undefined ? "border-ash" : "border-error",
             className,
