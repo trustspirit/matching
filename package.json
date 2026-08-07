@@ -5,7 +5,10 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:deno": "deno test --allow-env --allow-net supabase/functions/",
+    "test:deno:unit": "deno test --allow-env --allow-net supabase/functions/_shared/hash.test.ts",
+    "test:deno:lookup": "deno test --allow-env --allow-net supabase/functions/lookup/",
+    "test:deno:admin-import": "deno test --allow-env --allow-net supabase/functions/admin-import/",
+    "test:deno": "pnpm test:deno:unit && pnpm exec supabase db reset && pnpm test:deno:lookup && pnpm exec supabase db reset && pnpm test:deno:admin-import && pnpm exec supabase db reset",
     "dev": "pnpm --filter web dev",
     "build": "pnpm --filter web build",
     "typecheck": "tsc -p tsconfig.base.json --noEmit"
