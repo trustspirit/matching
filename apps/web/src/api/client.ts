@@ -41,9 +41,12 @@ async function readError(res: Response): Promise<never> {
 }
 
 export async function lookup(name: string, code: string): Promise<LookupResponse> {
+  // Resolved outside the try: a missing VITE_API_URL must surface as
+  // "missing_api_url", not get swallowed by the network-failure catch below.
+  const url = endpoint("/lookup");
   let res: Response;
   try {
-    res = await fetch(endpoint("/lookup"), {
+    res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, code }),
@@ -64,9 +67,11 @@ export async function adminImport(
   form.append("file", file);
   if (regenerateCodes) form.append("regenerateCodes", "true");
 
+  // Resolved outside the try: same reasoning as lookup() above.
+  const url = endpoint("/admin-import");
   let res: Response;
   try {
-    res = await fetch(endpoint("/admin-import"), {
+    res = await fetch(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${password}` },
       body: form,
