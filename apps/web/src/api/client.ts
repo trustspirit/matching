@@ -58,6 +58,30 @@ export async function lookup(name: string, code: string): Promise<LookupResponse
   return await res.json() as LookupResponse;
 }
 
+/**
+ * Checks the admin password without uploading anything. Used by the /admin
+ * entry screen so a typo surfaces before the operator picks a CSV file. This
+ * is not a session: the password is sent again with the actual upload.
+ */
+export async function adminVerify(password: string): Promise<void> {
+  const form = new FormData();
+  form.append("verifyOnly", "true");
+
+  // Resolved outside the try: same reasoning as lookup() above.
+  const url = endpoint("/admin-import");
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${password}` },
+      body: form,
+    });
+  } catch {
+    throw new ApiError("network_error");
+  }
+  if (!res.ok) await readError(res);
+}
+
 export async function adminImport(
   password: string,
   file: File,
