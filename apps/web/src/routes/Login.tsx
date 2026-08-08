@@ -1,8 +1,9 @@
 import { type FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { isValidCode, normalizeCode } from "@shared/code.ts";
+import { isValidCode } from "@shared/code.ts";
 import { ApiError, lookup } from "../api/client";
 import { Button } from "../design/Button";
+import { CodeInput } from "../design/CodeInput";
 import { TextInput } from "../design/TextInput";
 import { saveResult } from "../lib/session";
 
@@ -30,7 +31,9 @@ export function Login() {
     setLoading(true);
     setError(undefined);
     try {
-      const result = await lookup(name.trim(), normalizeCode(code));
+      // CodeInput only ever stores allowed characters, so `code` is already
+      // normalized by the time it reaches here.
+      const result = await lookup(name.trim(), code);
       saveResult(result);
       navigate("/result");
     } catch (caught) {
@@ -66,19 +69,7 @@ export function Login() {
             placeholder="김효준"
             required
           />
-          <TextInput
-            label="코드"
-            value={code}
-            onChange={(event) => setCode(normalizeCode(event.target.value))}
-            placeholder="K7M2QX"
-            inputMode="text"
-            autoCapitalize="characters"
-            autoComplete="off"
-            spellCheck={false}
-            maxLength={6}
-            error={error}
-            required
-          />
+          <CodeInput label="코드" onChange={setCode} error={error} />
           <Button type="submit" fullWidth disabled={!canSubmit} loading={loading}>
             확인하기
           </Button>
