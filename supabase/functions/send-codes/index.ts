@@ -29,7 +29,7 @@ const BATCH = 100;
 const STAMP_RETRIES = 3;
 
 /** Why a run stopped. The admin screen turns each into a different message. */
-type Outcome = "done" | "quota" | "time" | "disarmed";
+type Outcome = "done" | "quota" | "time" | "disarmed" | "partial";
 
 interface RunSummary {
   outcome: Outcome;
@@ -178,6 +178,29 @@ async function claim(
 }
 
 /**
+ * Participants still owed a code, ignoring who currently holds a claim.
+ *
+ * An empty claim batch is ambiguous: the queue may be empty, or everyone left
+ * may be claimed -- by this run's own failures, or by a concurrent run. Only
+ * the first case may disarm, so the ambiguity has to be resolved with a real
+ * count rather than inferred.
+ */
+async function pendingCount(db: SupabaseClient): Promise<number | null> {
+  const { count, error } = await db
+    .from("participants")
+    .select("id", { count: "exact", head: true })
+    .not("email", "is", null)
+    .neq("email", "")
+    .is("code_sent_at", null)
+    .lt("send_attempts", MAX_ATTEMPTS);
+  if (error) {
+    console.error("pending count failed", error);
+    return null;
+  }
+  return count ?? 0;
+}
+
+/**
  * Every stored code, so a freshly minted one cannot collide. Each row carries
  * its own salt, so uniqueness cannot be a database constraint -- the candidate
  * has to be hashed against every salt. See mintCode.ts.
@@ -246,6 +269,11 @@ async function stamp(
  * Read-modify-write rather than a SQL increment: PostgREST has no atomic
  * increment, and the claim this run still holds means nobody else is touching
  * the row.
+ *
+ * The claim is deliberately left in place. run()'s finally releases it when
+ * the run ends, which is what keeps a transient failure from being retried
+ * in a tight loop inside the same run while still returning the participant
+ * to the queue for the next one.
  */
 async function recordFailure(
   db: SupabaseClient,
@@ -264,8 +292,6 @@ async function recordFailure(
     .update({
       send_attempts: (data?.send_attempts ?? 0) + 1,
       send_last_error: reason.slice(0, 500),
-      send_claim_id: null,
-      send_claimed_at: null,
     })
     .eq("id", id)
     .eq("send_claim_id", runId);
@@ -354,15 +380,6 @@ async function run(db: SupabaseClient): Promise<RunSummary | null> {
 
   let sent = 0;
   let failed = 0;
-  // recordFailure clears the claim so the NEXT run can pick a failure back up
-  // -- but that also makes it instantly eligible to claim() again, and this
-  // run's own outer loop keeps claiming until the queue is empty. Without this
-  // guard a single permanently-bad address would be retried in a tight loop
-  // until it either succeeds by chance or burns through MAX_ATTEMPTS in the
-  // same couple of minutes, instead of one attempt per run. A row skipped here
-  // stays claimed by this run (claim() already stamped it) until the finally
-  // block releases it, so it is not reclaimed again until the next run.
-  const failedThisRun = new Set<string>();
 
   try {
     for (;;) {
@@ -373,16 +390,24 @@ async function run(db: SupabaseClient): Promise<RunSummary | null> {
       const batch = await claim(db, runId);
       if (batch === null) return null;
       if (batch.length === 0) {
-        // The queue is empty. Disarm so the next CSV import cannot start
-        // mailing people before anyone has looked at it, and drop any quota
-        // backoff so a stale timestamp cannot delay the next event's first run.
+        const remaining = await pendingCount(db);
+        if (remaining === null) return null;
+        if (remaining > 0) {
+          // Someone is still owed a code but is claimed right now -- this
+          // run's own failure (recordFailure deliberately leaves the claim in
+          // place), or a concurrent run. Stay armed; the next tick gets them.
+          return { outcome: "partial", sent, failed };
+        }
+        // The queue is genuinely empty. Disarm so the next CSV import cannot
+        // start mailing people before anyone has looked at it, and drop any
+        // quota backoff so a stale timestamp cannot delay the next event's
+        // first run.
         await setArmed(db, false);
         await setRetryAfter(db, null);
         return { outcome: "done", sent, failed };
       }
 
       for (const person of batch) {
-        if (failedThisRun.has(person.id)) continue;
         if (Date.now() >= deadline) {
           await release(db, runId);
           return { outcome: "time", sent, failed };
@@ -392,7 +417,6 @@ async function run(db: SupabaseClient): Promise<RunSummary | null> {
           sent++;
         } else if (result === "failed") {
           failed++;
-          failedThisRun.add(person.id);
         } else if (result === "quota") {
           await release(db, runId);
           // Stay armed -- the job is not finished, it is waiting for tomorrow.

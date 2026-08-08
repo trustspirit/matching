@@ -283,7 +283,9 @@ Deno.test("a rejected address fails only that participant", async () => {
         : new Response("{}", { status: 201 }),
     async () => {
       const body = await (await call("run")).json();
-      assertEquals(body.outcome, "done");
+      // The failed participant is still owed a code -- send_attempts (1) is
+      // well under the ceiling -- so the run is not "done", it is "partial".
+      assertEquals(body.outcome, "partial");
       assertEquals(body.sent, 2);
       assertEquals(body.failed, 1);
     },
@@ -293,6 +295,70 @@ Deno.test("a rejected address fails only that participant", async () => {
   assertEquals(
     await sql("select count(*) from participants where send_last_error is not null;"),
     "1",
+  );
+});
+
+Deno.test("a partial run stays armed instead of silently dropping the failure", async () => {
+  // This is the hole the failedThisRun approach opened: if a lone failure
+  // could make the batch look empty, the run would read that as "done" and
+  // disarm -- and since send_attempts (1) is nowhere near the needsAttention
+  // threshold (5), nobody would ever be told this participant has no code.
+  await seed(3);
+  await (await call("arm")).body?.cancel();
+
+  await withBrevo(
+    (_req, n) =>
+      n === 0
+        ? new Response(JSON.stringify({ message: "invalid email" }), { status: 400 })
+        : new Response("{}", { status: 201 }),
+    async () => {
+      const body = await (await call("run")).json();
+      assertEquals(body.outcome, "partial");
+    },
+  );
+
+  assertEquals(
+    await sql("select value from app_config where key = 'code_send_armed';"),
+    "true",
+  );
+});
+
+Deno.test("a participant who exhausts every attempt lets the run finish and disarm", async () => {
+  await seed(1);
+  await (await call("arm")).body?.cancel();
+
+  // recordFailure leaves the claim in place for the rest of THIS run, so one
+  // bad address is only attempted once per run -- reaching the five-attempt
+  // ceiling takes five separate runs, each picking the row back up after the
+  // previous run's finally() releases it. The first four each still find the
+  // participant owed a code (outcome "partial"); only the fifth, once
+  // send_attempts hits MAX_ATTEMPTS, sees a genuinely empty queue.
+  let calls = 0;
+  await withBrevo(
+    () => {
+      calls++;
+      return new Response(JSON.stringify({ message: "invalid email" }), { status: 400 });
+    },
+    async () => {
+      for (let i = 1; i <= 5; i++) {
+        const body = await (await call("run")).json();
+        assertEquals(body.sent, 0, `run ${i}`);
+        assertEquals(body.failed, 1, `run ${i}`);
+        assertEquals(body.outcome, i < 5 ? "partial" : "done", `run ${i}`);
+      }
+    },
+  );
+
+  assertEquals(calls, 5);
+  assertEquals(
+    await sql("select send_attempts from participants where display_name = '사람0';"),
+    "5",
+  );
+  // Attempts at the ceiling is exactly what makes the admin's 확인 필요 count
+  // pick this participant up.
+  assertEquals(
+    await sql("select value from app_config where key = 'code_send_armed';"),
+    "false",
   );
 });
 
