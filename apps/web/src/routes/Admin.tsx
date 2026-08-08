@@ -153,7 +153,11 @@ export function Admin() {
           />
         )}
         {tab === "participants" && (
-          <ParticipantsTab participants={participants} />
+          <ParticipantsTab
+            password={password}
+            participants={participants}
+            onChanged={() => void reload()}
+          />
         )}
         {tab === "csv" && (
           <CsvTab
