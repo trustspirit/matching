@@ -5,6 +5,7 @@ import { Button } from "../design/Button";
 import { Card } from "../design/Card";
 import { TextInput } from "../design/TextInput";
 import { CsvTab } from "./admin/CsvTab";
+import { MatchesTab } from "./admin/MatchesTab";
 
 const MESSAGES: Record<string, string> = {
   unauthorized: "비밀번호가 올바르지 않습니다.",
@@ -143,9 +144,12 @@ export function Admin() {
 
       <div className="mt-xl">
         {tab === "matches" && (
-          <Card>
-            <p className="type-body-md text-mute">매칭 {matches.length}건</p>
-          </Card>
+          <MatchesTab
+            password={password}
+            matches={matches}
+            participants={participants}
+            onChanged={() => void reload()}
+          />
         )}
         {tab === "participants" && (
           <Card>
