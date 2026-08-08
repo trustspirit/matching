@@ -40,7 +40,7 @@ async function readError(res: Response): Promise<never> {
   throw new ApiError(code, retryAfter, details);
 }
 
-export async function lookup(name: string, code: string): Promise<LookupResponse> {
+export async function lookup(code: string): Promise<LookupResponse> {
   // Resolved outside the try: a missing VITE_API_URL must surface as
   // "missing_api_url", not get swallowed by the network-failure catch below.
   const url = endpoint("/lookup");
@@ -49,7 +49,7 @@ export async function lookup(name: string, code: string): Promise<LookupResponse
     res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, code }),
+      body: JSON.stringify({ code }),
     });
   } catch {
     throw new ApiError("network_error");

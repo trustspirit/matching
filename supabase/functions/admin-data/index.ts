@@ -1,8 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { handlePreflight, jsonResponse } from "../_shared/cors.ts";
 import { createServiceClient } from "../_shared/db.ts";
-import { hashCode, randomSalt, timingSafeEqual } from "../_shared/hash.ts";
-import { generateCode } from "../_shared/lib/code.ts";
+import { timingSafeEqual } from "../_shared/hash.ts";
+import { mintUniqueCode, type TakenCode } from "../_shared/mintCode.ts";
 import { normalizeName } from "../_shared/lib/name.ts";
 import {
   bearerToken,
@@ -134,6 +134,23 @@ async function participantImpact(
     team: r.team,
     partnerName: r.partner_name,
   }));
+}
+
+/**
+ * Every code currently in use. Needed because a per-row salt makes it
+ * impossible to test a candidate code without hashing it against each stored
+ * salt, and a code alone now identifies a participant.
+ */
+async function takenCodes(db: SupabaseClient): Promise<TakenCode[] | null> {
+  const { data, error } = await db
+    .from("participants")
+    .select("code_salt, code_hash")
+    .returns<{ code_salt: string; code_hash: string }[]>();
+  if (error) {
+    console.error("taken code lookup failed", error);
+    return null;
+  }
+  return (data ?? []).map((r) => ({ salt: r.code_salt, hash: r.code_hash }));
 }
 
 interface ParticipantInput {
@@ -368,9 +385,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const input = readParticipantInput(payload);
     if (input === null) return jsonResponse(req, { error: "invalid_request" }, 400);
 
-    const code = generateCode();
-    const salt = randomSalt();
-    const hash = await hashCode(salt, code);
+    const taken = await takenCodes(db);
+    if (taken === null) return jsonResponse(req, { error: "server_error" }, 500);
+    const { code, salt, hash } = await mintUniqueCode(taken);
 
     const { data, error } = await db
       .from("participants")
@@ -463,9 +480,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
       return jsonResponse(req, { error: "invalid_request" }, 400);
     }
 
-    const code = generateCode();
-    const salt = randomSalt();
-    const hash = await hashCode(salt, code);
+    const taken = await takenCodes(db);
+    if (taken === null) return jsonResponse(req, { error: "server_error" }, 500);
+    const { code, salt, hash } = await mintUniqueCode(taken);
 
     const { data, error } = await db
       .from("participants")

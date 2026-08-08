@@ -2,16 +2,17 @@ import { assert, assertEquals } from "jsr:@std/assert@1";
 
 const BASE = Deno.env.get("FUNCTIONS_URL") ?? "http://127.0.0.1:54321/functions/v1";
 
-async function lookup(name: string, code: string): Promise<Response> {
+/** Login takes the code alone; the name is no longer part of the credential. */
+async function lookup(code: string): Promise<Response> {
   return await fetch(`${BASE}/lookup`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, code }),
+    body: JSON.stringify({ code }),
   });
 }
 
-Deno.test("returns the participant's match on a correct name and code", async () => {
-  const res = await lookup("김효준", "TES-TA2");
+Deno.test("returns the participant's match for a correct code", async () => {
+  const res = await lookup("TES-TA2");
   assertEquals(res.status, 200);
   const body = await res.json();
   assertEquals(body.displayName, "김효준");
@@ -24,12 +25,12 @@ Deno.test("returns the participant's match on a correct name and code", async ()
 });
 
 Deno.test("accepts a code in any casing or spacing", async () => {
-  const res = await lookup(" 김 효 준 ", "tes ta2");
+  const res = await lookup("tes ta2");
   assertEquals(res.status, 200);
 });
 
 Deno.test("returns both matches for a participant attending twice", async () => {
-  const res = await lookup("윤모습", "TESTA5");
+  const res = await lookup("TESTA5");
   const body = await res.json();
   assertEquals(body.matches.length, 2);
   const sessions = body.matches.map((m: { session: string }) => m.session).sort();
@@ -37,47 +38,54 @@ Deno.test("returns both matches for a participant attending twice", async () => 
 });
 
 Deno.test("returns null team when the team is undecided", async () => {
-  const res = await lookup("박한서", "TESTA4");
+  const res = await lookup("TESTA4");
   const body = await res.json();
   assertEquals(body.matches[0].team, null);
 });
 
 Deno.test("returns an empty list for a participant with no match", async () => {
-  const res = await lookup("이승준", "TESTAC");
+  const res = await lookup("TESTAC");
   assertEquals(res.status, 200);
   const body = await res.json();
   assertEquals(body.matches, []);
 });
 
-Deno.test("keeps same-name participants separated by code", async () => {
-  const first = await (await lookup("김시현", "TESTA7")).json();
-  const second = await (await lookup("김시현", "TESTA8")).json();
+Deno.test("tells participants who share a name apart by code", async () => {
+  const first = await (await lookup("TESTA7")).json();
+  const second = await (await lookup("TESTA8")).json();
   assertEquals(first.matches[0].partnerName, "윤해서");
   assertEquals(second.matches[0].partnerName, "김은해");
 });
 
-Deno.test("rejects a wrong code for an existing name", async () => {
-  const res = await lookup("김효준", "TESTAZ");
+Deno.test("rejects a code nobody holds", async () => {
+  const res = await lookup("TESTAZ");
   assertEquals(res.status, 401);
   assertEquals((await res.json()).error, "invalid_credentials");
 });
 
-Deno.test("responds identically for an unknown name and a wrong code", async () => {
-  const unknown = await lookup("존재하지않는사람", "TESTA2");
-  const wrongCode = await lookup("김효준", "TESTAZ");
-  assertEquals(unknown.status, wrongCode.status);
-  assertEquals(await unknown.json(), await wrongCode.json());
+Deno.test("rejects a well-formed code that belongs to no one", async () => {
+  // Two different unused codes must be indistinguishable from each other:
+  // nothing in the response may hint at how close a guess was.
+  const a = await lookup("TESTAZ");
+  const b = await lookup("TESTAY");
+  assertEquals(a.status, b.status);
+  assertEquals(await a.json(), await b.json());
 });
 
 Deno.test("rejects a malformed code before touching the database", async () => {
-  const res = await lookup("김효준", "K7M2Q0"); // 0 is not in the alphabet
+  const res = await lookup("K7M2Q0"); // 0 is not in the alphabet
   assertEquals(res.status, 400);
   assertEquals((await res.json()).error, "invalid_request");
 });
 
-Deno.test("rejects an empty name", async () => {
-  const res = await lookup("   ", "TESTA2");
+Deno.test("rejects a missing code", async () => {
+  const res = await fetch(`${BASE}/lookup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
   assertEquals(res.status, 400);
+  assertEquals((await res.json()).error, "invalid_request");
 });
 
 Deno.test("throttles after MAX_FAILURES_PER_WINDOW failures from the same address", async () => {
@@ -89,7 +97,7 @@ Deno.test("throttles after MAX_FAILURES_PER_WINDOW failures from the same addres
     fetch(`${BASE}/lookup`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-forwarded-for": ip },
-      body: JSON.stringify({ name: "김효준", code: "TESTAZ" }),
+      body: JSON.stringify({ code: "TESTAZ" }),
     });
 
   for (let i = 0; i < 30; i++) {

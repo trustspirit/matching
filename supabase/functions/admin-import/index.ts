@@ -7,9 +7,8 @@ import {
   hashIp,
   isRateLimited,
 } from "../_shared/rateLimit.ts";
-import { hashCode, randomSalt } from "../_shared/hash.ts";
 import { bearerToken, verifySession } from "../_shared/session.ts";
-import { generateCode } from "../_shared/lib/code.ts";
+import { mintUniqueCode, type TakenCode } from "../_shared/mintCode.ts";
 import { buildCodesCsv, parseMatchCsv } from "../_shared/lib/csv.ts";
 import type { CodeRow, ParsedPerson } from "../_shared/lib/types.ts";
 
@@ -71,16 +70,25 @@ Deno.serve(async (req: Request): Promise<Response> => {
     people.set(personKey(match.female), match.female);
   }
 
+  // The salt/hash pairs come along so newly minted codes can be checked
+  // against every code already in use: a code alone identifies a participant
+  // now, so two people must never share one.
   const { data: existingRows, error: existingError } = await db
     .from("participants")
-    .select("name, birthdate")
-    .returns<{ name: string; birthdate: string }[]>();
+    .select("name, birthdate, code_salt, code_hash")
+    .returns<
+      { name: string; birthdate: string; code_salt: string; code_hash: string }[]
+    >();
   if (existingError) {
     return jsonResponse(req, { error: "server_error" }, 500);
   }
   const existing = new Set(
     (existingRows ?? []).map((row) => `${row.name}|${row.birthdate}`),
   );
+  const taken: TakenCode[] = (existingRows ?? []).map((row) => ({
+    salt: row.code_salt,
+    hash: row.code_hash,
+  }));
 
   const participantPayload: Record<string, unknown>[] = [];
   const codeRows: CodeRow[] = [];
@@ -98,9 +106,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
     let hash = "";
 
     if (needsCode) {
-      code = generateCode();
-      salt = randomSalt();
-      hash = await hashCode(salt, code);
+      const minted = await mintUniqueCode(taken);
+      code = minted.code;
+      salt = minted.salt;
+      hash = minted.hash;
+      // Guard the rest of this batch against colliding with what was just
+      // minted, not only against what was already stored.
+      taken.push({ salt: minted.salt, hash: minted.hash });
     }
 
     participantPayload.push({
