@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { AdminParticipantRow, ImpactRow } from "@shared/types.ts";
 import { adminData, ApiError } from "../../api/client";
 import { Button } from "../../design/Button";
@@ -10,6 +10,9 @@ import { DeleteParticipantDialog } from "./DeleteParticipantDialog";
 
 const MESSAGES: Record<string, string> = {
   invalid_request: "입력값을 확인해주세요.",
+  no_email: "이 참가자에게는 등록된 이메일이 없습니다.",
+  email_disabled: "이메일 발송이 설정되어 있지 않습니다.",
+  email_failed: "메일 발송에 실패했습니다. 잠시 후 다시 시도해주세요.",
   duplicate_participant: "이미 같은 이름·생년월일의 참가자가 있습니다.",
   not_found: "이미 삭제된 항목입니다. 새로고침 후 다시 시도해주세요.",
   unauthorized: "비밀번호가 올바르지 않습니다.",
@@ -45,8 +48,10 @@ function toDraft(row: AdminParticipantRow): Draft {
 }
 
 interface Revealed {
+  id: string;
   name: string;
   code: string;
+  email: string | null;
 }
 
 interface Deleting {
@@ -76,6 +81,45 @@ export function ParticipantsTab({
   // null = no dialog, otherwise the ids to reissue (empty array means everyone).
   const [confirming, setConfirming] = useState<string[] | null>(null);
   const [issuedCsv, setIssuedCsv] = useState<string | null>(null);
+  const [emailOn, setEmailOn] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [sendError, setSendError] = useState<string | undefined>();
+
+  useEffect(() => {
+    let alive = true;
+    adminData<{ enabled: boolean }>(token, "email_status")
+      .then((r) => {
+        if (alive) setEmailOn(r.enabled);
+      })
+      // A failure here only means the button stays hidden, which is the safe
+      // default; the tab must still work.
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [token]);
+
+  async function sendCode(): Promise<void> {
+    if (revealed === null || sending) return;
+    setSending(true);
+    setSendError(undefined);
+    try {
+      await adminData(token, "send_code", {
+        id: revealed.id,
+        code: revealed.code,
+      });
+      setSent(true);
+    } catch (caught) {
+      setSendError(
+        caught instanceof ApiError
+          ? MESSAGES[caught.code] ?? MESSAGES.server_error
+          : MESSAGES.network_error,
+      );
+    } finally {
+      setSending(false);
+    }
+  }
 
   const allSelected = participants.length > 0 &&
     selected.size === participants.length;
@@ -142,7 +186,14 @@ export function ParticipantsTab({
           "create_participant",
           { ...draft },
         );
-        setRevealed({ name: draft.displayName, code: created.code });
+        setSent(false);
+        setSendError(undefined);
+        setRevealed({
+          id: created.id,
+          name: draft.displayName,
+          code: created.code,
+          email: draft.email.trim() === "" ? null : draft.email.trim(),
+        });
       } else {
         await adminData(token, "update_participant", {
           id: editing,
@@ -168,7 +219,14 @@ export function ParticipantsTab({
         "regenerate_code",
         { id: row.id },
       );
-      setRevealed({ name: row.displayName, code: result.code });
+      setSent(false);
+      setSendError(undefined);
+      setRevealed({
+        id: row.id,
+        name: row.displayName,
+        code: result.code,
+        email: row.email,
+      });
     } catch (caught) {
       report(caught);
     } finally {
@@ -390,6 +448,12 @@ export function ParticipantsTab({
         <CodeReveal
           name={revealed.name}
           code={revealed.code}
+          email={revealed.email}
+          canSend={emailOn}
+          sending={sending}
+          sent={sent}
+          sendError={sendError}
+          onSend={() => void sendCode()}
           onDismiss={() => setRevealed(null)}
         />
       )}

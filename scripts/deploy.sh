@@ -45,6 +45,20 @@ run pnpm exec supabase secrets set \
   "ADMIN_PASSWORD=${ADMIN_PASSWORD}" \
   "ALLOWED_ORIGIN=${SITE_ORIGIN}"
 
+# Optional. Without these the admin screen simply hides the "send by email"
+# button; everything else works, so a missing mail account never blocks a
+# deploy.
+if [[ -n "${BREVO_API_KEY:-}" ]]; then
+  echo "==> setting mail secrets"
+  run pnpm exec supabase secrets set \
+    "BREVO_API_KEY=${BREVO_API_KEY}" \
+    "BREVO_SENDER_EMAIL=${BREVO_SENDER_EMAIL:-}" \
+    "BREVO_SENDER_NAME=${BREVO_SENDER_NAME:-}" \
+    "EVENT_CONTACT=${EVENT_CONTACT:-}"
+else
+  echo "==> mail secrets skipped (set BREVO_API_KEY to enable code emails)"
+fi
+
 # Secrets only take effect on redeploy, so this must follow the step above.
 echo "==> deploying functions"
 run pnpm exec supabase functions deploy lookup --no-verify-jwt \

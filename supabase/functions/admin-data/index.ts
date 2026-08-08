@@ -4,6 +4,7 @@ import { createServiceClient } from "../_shared/db.ts";
 import { timingSafeEqual } from "../_shared/hash.ts";
 import { mintUniqueCode, type TakenCode } from "../_shared/mintCode.ts";
 import { buildCodesCsv } from "../_shared/lib/csv.ts";
+import { emailEnabled, sendCodeEmail } from "../_shared/sendEmail.ts";
 import { normalizeName } from "../_shared/lib/name.ts";
 import {
   bearerToken,
@@ -474,6 +475,47 @@ Deno.serve(async (req: Request): Promise<Response> => {
       return jsonResponse(req, { error: "not_found" }, 404);
     }
     return jsonResponse(req, { ok: true });
+  }
+
+  if (action === "email_status") {
+    // Lets the screen hide the send button instead of offering an action that
+    // can only fail.
+    return jsonResponse(req, { enabled: emailEnabled() });
+  }
+
+  if (action === "send_code") {
+    const id = (payload as { id?: unknown }).id;
+    const code = (payload as { code?: unknown }).code;
+    if (typeof id !== "string" || id === "" || typeof code !== "string" || code === "") {
+      return jsonResponse(req, { error: "invalid_request" }, 400);
+    }
+
+    const { data, error } = await db
+      .from("participants")
+      .select("display_name, email")
+      .eq("id", id)
+      .maybeSingle<{ display_name: string; email: string | null }>();
+
+    if (error) {
+      console.error("send_code lookup failed", error);
+      return jsonResponse(req, { error: "server_error" }, 500);
+    }
+    if (data === null) return jsonResponse(req, { error: "not_found" }, 404);
+    if (data.email === null || data.email === "") {
+      return jsonResponse(req, { error: "no_email" }, 400);
+    }
+
+    // The plaintext comes back from the browser because the server never kept
+    // it; only its hash is stored. Nothing new is exposed -- this is the value
+    // the server handed out moments ago.
+    const result = await sendCodeEmail(data.email, data.display_name, code);
+    if (result === "disabled") {
+      return jsonResponse(req, { error: "email_disabled" }, 400);
+    }
+    if (result === "failed") {
+      return jsonResponse(req, { error: "email_failed" }, 502);
+    }
+    return jsonResponse(req, { ok: true, email: data.email });
   }
 
   if (action === "regenerate_codes") {

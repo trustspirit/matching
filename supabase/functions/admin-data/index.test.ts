@@ -586,3 +586,60 @@ Deno.test("reports not_found when no id matches", async () => {
   assertEquals(res.status, 404);
   assertEquals((await res.json()).error, "not_found");
 });
+
+Deno.test("reports whether email is configured", async () => {
+  const res = await call("email_status");
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  // Locally BREVO_API_KEY is unset, so the feature reports itself off rather
+  // than offering a button that can only fail.
+  assertEquals(typeof body.enabled, "boolean");
+});
+
+Deno.test("send_code rejects a request without a code", async () => {
+  const id = await idOf("표여");
+  const res = await call("send_code", { id });
+  assertEquals(res.status, 400);
+  assertEquals((await res.json()).error, "invalid_request");
+});
+
+Deno.test("send_code reports an unknown participant", async () => {
+  const res = await call("send_code", {
+    id: "00000000-0000-0000-0000-000000000000",
+    code: "ABCDEF",
+  });
+  assertEquals(res.status, 404);
+  assertEquals((await res.json()).error, "not_found");
+});
+
+Deno.test("send_code refuses a participant with no email", async () => {
+  await ensureAbsent("메일없음");
+  const created = await (await call("create_participant", {
+    displayName: "메일없음",
+    birthdate: "1994-04-04",
+    gender: "F",
+    contact: "",
+    email: "",
+  })).json();
+
+  const res = await call("send_code", { id: created.id, code: created.code });
+  assertEquals(res.status, 400);
+  // Checked before the provider is called: no point spending a send on an
+  // address that does not exist.
+  assertEquals((await res.json()).error, "no_email");
+});
+
+Deno.test("send_code reports the feature as off when unconfigured", async () => {
+  const status = await (await call("email_status")).json();
+  const id = await idOf("표여");
+
+  const res = await call("send_code", { id, code: "ABCDEF" });
+  if (status.enabled) {
+    // With a real key configured this would attempt a send; the local suite
+    // runs without one, so only assert the disabled path here.
+    await res.body?.cancel();
+    return;
+  }
+  assertEquals(res.status, 400);
+  assertEquals((await res.json()).error, "email_disabled");
+});
