@@ -82,6 +82,34 @@ export async function adminVerify(password: string): Promise<void> {
   if (!res.ok) await readError(res);
 }
 
+/**
+ * Calls the row-level admin API. The password is re-sent with every request:
+ * there is no session, the same as adminVerify and adminImport.
+ */
+export async function adminData<T>(
+  password: string,
+  action: string,
+  params: Record<string, unknown> = {},
+): Promise<T> {
+  // Resolved outside the try: same reasoning as lookup() above.
+  const url = endpoint("/admin-data");
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${password}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ action, ...params }),
+    });
+  } catch {
+    throw new ApiError("network_error");
+  }
+  if (!res.ok) await readError(res);
+  return await res.json() as T;
+}
+
 export async function adminImport(
   password: string,
   file: File,

@@ -51,6 +51,32 @@ export interface ParseResult {
   warnings: string[];
 }
 
+/** One match row as shown in the admin table. */
+export interface AdminMatchRow {
+  id: string;
+  session: Session;
+  timeRange: string;
+  arriveBy: string;
+  venue: string;
+  team: string | null;
+  maleId: string;
+  maleName: string;
+  maleBirthdate: string;
+  femaleId: string;
+  femaleName: string;
+  femaleBirthdate: string;
+}
+
+/** One participant row as shown in the admin table. */
+export interface AdminParticipantRow {
+  id: string;
+  displayName: string;
+  birthdate: string;
+  gender: "M" | "F";
+  contact: string | null;
+  email: string | null;
+}
+
 /** One line of the code CSV handed back to the organizer after an import. */
 export interface CodeRow {
   displayName: string;

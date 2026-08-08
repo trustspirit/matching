@@ -1,0 +1,196 @@
+import { type FormEvent, useState } from "react";
+import { adminImport, ApiError, type ImportResponse } from "../../api/client";
+import { Button } from "../../design/Button";
+import { Card } from "../../design/Card";
+
+const MESSAGES: Record<string, string> = {
+  unauthorized: "비밀번호가 올바르지 않습니다.",
+  invalid_csv: "CSV에 오류가 있어 아무것도 반영하지 않았습니다.",
+  invalid_request: "파일을 확인해주세요.",
+  network_error: "연결에 실패했습니다. 다시 시도해주세요.",
+  server_error: "서버 오류가 발생했습니다.",
+  missing_api_url: "사이트 설정이 완료되지 않았습니다.",
+  too_many_attempts: "시도가 너무 많습니다. 잠시 후 다시 시도해주세요.",
+};
+
+function downloadCsv(content: string): void {
+  // Excel needs a BOM to read UTF-8 Korean without mojibake.
+  const blob = new Blob([`﻿${content}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = "참가자_코드.csv";
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+interface CsvTabProps {
+  password: string;
+  /** Rows that this upload would delete. Zero means a first-time import. */
+  matchCount: number;
+  onImported: () => void;
+}
+
+export function CsvTab({ password, matchCount, onImported }: CsvTabProps) {
+  const [file, setFile] = useState<File | null>(null);
+  const [regenerate, setRegenerate] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const [details, setDetails] = useState<string[]>([]);
+  const [result, setResult] = useState<ImportResponse | null>(null);
+
+  // The confirmation only appears once there is something to lose.
+  const needsAck = matchCount > 0;
+  const canSubmit = file !== null && (!needsAck || acknowledged);
+
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    if (!canSubmit || file === null || loading) return;
+    setLoading(true);
+    setError(undefined);
+    setDetails([]);
+    setResult(null);
+    try {
+      const response = await adminImport(password, file, regenerate);
+      setResult(response);
+      downloadCsv(response.codesCsv);
+      onImported();
+    } catch (caught) {
+      if (caught instanceof ApiError) {
+        setError(MESSAGES[caught.code] ?? MESSAGES.server_error);
+        setDetails(caught.details ?? []);
+      } else {
+        setError(MESSAGES.network_error);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <>
+      <Card>
+        <form onSubmit={handleSubmit} className="flex flex-col gap-lg">
+          {needsAck && (
+            <div className="type-body-sm rounded-md bg-surface-card px-lg py-md text-error">
+              <p className="type-body-sm-strong">
+                현재 {matchCount}건의 매칭이 등록되어 있습니다.
+              </p>
+              <p className="mt-xs">
+                업로드하면 이 {matchCount}건이 전부 삭제되고 CSV 내용으로
+                교체됩니다. 한 건만 고칠 때는 매칭 탭에서 그 행을 수정하세요.
+              </p>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-xs">
+            <label htmlFor="csv" className="type-body-strong text-ink">
+              매칭 CSV
+            </label>
+            <input
+              id="csv"
+              type="file"
+              accept=".csv,text/csv"
+              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+              className="type-body-sm rounded-md border border-dashed border-hairline bg-surface-card p-lg text-body"
+              required
+            />
+            <p className="type-caption-md text-mute">
+              컬럼: 부, 시간, 장소, 조, 남성 이름/생년월일/연락처/이메일,
+              여성 이름/생년월일/연락처/이메일
+            </p>
+          </div>
+
+          <label className="type-body-sm flex items-start gap-sm text-body">
+            <input
+              type="checkbox"
+              checked={regenerate}
+              onChange={(event) => setRegenerate(event.target.checked)}
+              className="mt-1"
+            />
+            <span>
+              전원 코드 재발급
+              <span className="block text-error">
+                체크하면 이미 나눠준 코드가 모두 무효가 됩니다.
+              </span>
+            </span>
+          </label>
+
+          {needsAck && (
+            <label className="type-body-sm flex items-start gap-sm text-body">
+              <input
+                type="checkbox"
+                checked={acknowledged}
+                onChange={(event) => setAcknowledged(event.target.checked)}
+                className="mt-1"
+              />
+              <span>알고 있으며 진행합니다</span>
+            </label>
+          )}
+
+          <Button
+            type="submit"
+            fullWidth
+            disabled={!canSubmit}
+            loading={loading}
+            loadingText="업로드 중…"
+          >
+            업로드
+          </Button>
+
+          {error !== undefined && (
+            <div role="alert" className="type-body-sm text-error">
+              <p>{error}</p>
+              {details.length > 0 && (
+                <ul className="mt-sm list-disc pl-lg">
+                  {details.map((detail) => <li key={detail}>{detail}</li>)}
+                </ul>
+              )}
+            </div>
+          )}
+        </form>
+      </Card>
+
+      {result !== null && (
+        <div className="mt-xl">
+          <Card>
+            <h2 className="type-heading-lg text-ink">업로드 완료</h2>
+            <ul className="type-body-md mt-lg flex flex-col gap-xs text-body">
+              <li>참가자 신규 {result.participants.created}명</li>
+              <li>참가자 갱신 {result.participants.updated}명</li>
+              <li>매칭 {result.matches}건</li>
+            </ul>
+
+            <p className="type-body-sm-strong mt-xl rounded-md bg-surface-card px-lg py-md text-error">
+              코드 CSV가 다운로드되었습니다. 평문 코드는 지금 이 파일에만
+              있습니다. 서버에는 해시만 남아 다시 볼 수 없으니 반드시
+              보관해주세요.
+            </p>
+
+            {result.warnings.length > 0 && (
+              <>
+                <h3 className="type-body-strong mt-xl text-ink">경고</h3>
+                <ul className="type-body-sm mt-sm list-disc pl-lg text-mute">
+                  {result.warnings.map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              </>
+            )}
+
+            <div className="mt-xl">
+              <Button
+                variant="secondary"
+                fullWidth
+                onClick={() => downloadCsv(result.codesCsv)}
+              >
+                코드 CSV 다시 받기
+              </Button>
+            </div>
+          </Card>
+        </div>
+      )}
+    </>
+  );
+}
