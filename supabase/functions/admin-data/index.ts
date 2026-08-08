@@ -690,7 +690,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       }
 
       const result = await sendCodeEmail(p.email!, p.display_name, minted.code);
-      if (result !== "sent") {
+      if (result.kind !== "sent") {
         // The code changed but the mail did not go out. code_sent_at stays
         // null, so this participant is still pending and the next run gives
         // them another code and another attempt.
