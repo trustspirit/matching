@@ -45,17 +45,17 @@ export function Login() {
   }
 
   return (
-    <main className="flex min-h-full items-center justify-center px-lg py-xxl">
+    <main className="flex min-h-full justify-center px-lg py-xxl">
       <div className="w-full max-w-[480px] rounded-lg bg-canvas p-xxl">
         <p className="type-caption-md flex items-center gap-sm text-mute">
           <span
             aria-hidden="true"
             className="inline-block h-2 w-2 rounded-full bg-primary"
           />
-          랜덤 소개팅
+          데이트 매칭
         </p>
 
-        <h1 className="type-display-lg mt-lg text-ink">내 자리 확인하기</h1>
+        <h1 className="type-display-lg mt-lg text-ink">매칭 결과 확인하기</h1>
         <p className="type-body-md mt-md text-mute">
           이름과 전달받은 코드를 입력해주세요.
         </p>
