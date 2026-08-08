@@ -2,13 +2,13 @@
 # Deploys the database and Edge Functions, then verifies the deployment.
 #
 # Re-running this script is cheap and idempotent. That is the intended fix for
-# the ALLOWED_ORIGIN ordering problem: run it once before the Cloudflare Worker
-# exists (SITE_ORIGIN=http://localhost:5173), then again with the real
-# workers.dev domain once it does.
+# the ALLOWED_ORIGIN ordering problem: run it once before the Cloudflare Pages
+# site exists (SITE_ORIGIN=http://localhost:5173), then again with the real
+# pages.dev domain once it does.
 #
 # Usage:
 #   PROJECT_REF=abcd ADMIN_PASSWORD=... \
-#     SITE_ORIGIN=https://matching.<subdomain>.workers.dev \
+#     SITE_ORIGIN=https://<project>.pages.dev \
 #     ./scripts/deploy.sh [--dry-run]
 set -euo pipefail
 
@@ -51,13 +51,15 @@ run pnpm exec supabase functions deploy lookup --no-verify-jwt \
   --project-ref "$PROJECT_REF"
 run pnpm exec supabase functions deploy admin-import --no-verify-jwt \
   --project-ref "$PROJECT_REF"
+run pnpm exec supabase functions deploy admin-data --no-verify-jwt \
+  --project-ref "$PROJECT_REF"
 
 if [[ "$DRY_RUN" == true ]]; then
   echo "dry run complete; skipping smoke tests"
   exit 0
 fi
 
-echo "==> smoke test 1/4: gateway is not swallowing requests"
+echo "==> smoke test 1/5: gateway is not swallowing requests"
 body=$(curl -sS -X POST "${FUNCTIONS_URL}/lookup" \
   -H "Content-Type: application/json" \
   -d '{"name":"존재하지않음","code":"XXXXXX"}')
@@ -74,7 +76,7 @@ echo "    ok"
 # drops the Vary header, so running this against localhost always fails even
 # when cors.ts is correct -- the same class of local/production divergence as
 # the JWT gateway. Do not "fix" a local failure by loosening this assertion.
-echo "==> smoke test 2/4: CORS allows the site origin"
+echo "==> smoke test 2/5: CORS allows the site origin"
 first_origin="${SITE_ORIGIN%%,*}"
 allow=$(curl -sS -X OPTIONS "${FUNCTIONS_URL}/lookup" \
   -H "Origin: ${first_origin}" \
@@ -87,7 +89,7 @@ if [[ "$allow" != "$first_origin" ]]; then
 fi
 echo "    ok"
 
-echo "==> smoke test 3/4: the admin password actually took effect"
+echo "==> smoke test 3/5: the admin password actually took effect"
 status=$(curl -sS -o /dev/null -w '%{http_code}' \
   -X POST "${FUNCTIONS_URL}/admin-import" \
   -H "Authorization: Bearer ${ADMIN_PASSWORD}" \
@@ -100,8 +102,20 @@ if [[ "$status" != "200" ]]; then
 fi
 echo "    ok"
 
+echo "==> smoke test 4/5: admin-data reaches the function, not the gateway"
+adm=$(curl -sS -X POST "${FUNCTIONS_URL}/admin-data" \
+  -H "Authorization: Bearer ${ADMIN_PASSWORD}" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"list_matches"}')
+if ! grep -q '"matches"' <<<"$adm"; then
+  echo "FAIL: expected a matches array, got: $adm" >&2
+  echo "If this shows a gateway 401, redeploy admin-data with --no-verify-jwt." >&2
+  exit 1
+fi
+echo "    ok"
+
 if [[ -n "${ANON_KEY:-}" ]]; then
-  echo "==> smoke test 4/4: RLS blocks the REST endpoint"
+  echo "==> smoke test 5/5: RLS blocks the REST endpoint"
   rest=$(curl -sS "https://${PROJECT_REF}.supabase.co/rest/v1/participants?select=name" \
     -H "apikey: ${ANON_KEY}")
   if grep -q '"name"' <<<"$rest"; then
@@ -110,7 +124,7 @@ if [[ -n "${ANON_KEY:-}" ]]; then
   fi
   echo "    ok"
 else
-  echo "==> smoke test 4/4: skipped (set ANON_KEY to enable the RLS check)"
+  echo "==> smoke test 5/5: skipped (set ANON_KEY to enable the RLS check)"
 fi
 
 echo
