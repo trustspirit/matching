@@ -27,6 +27,16 @@ async function upload(
   });
 }
 
+async function verify(password: string): Promise<Response> {
+  const form = new FormData();
+  form.append("verifyOnly", "true");
+  return await fetch(`${BASE}/admin-import`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${password}` },
+    body: form,
+  });
+}
+
 async function lookup(name: string, code: string): Promise<Response> {
   return await fetch(`${BASE}/lookup`, {
     method: "POST",
@@ -158,4 +168,45 @@ Deno.test("rejects a request with no file", async () => {
   });
   assertEquals(res.status, 400);
   await res.body?.cancel();
+});
+
+// The gate tests below consume the admin rate-limit budget, so they must stay
+// at the end of this file: everything above assumes an unthrottled admin path.
+Deno.test("verifyOnly accepts the correct password without writing anything", async () => {
+  const res = await verify(PASSWORD);
+  assertEquals(res.status, 200);
+  assertEquals((await res.json()).ok, true);
+});
+
+Deno.test("verifyOnly rejects a wrong password", async () => {
+  const res = await verify("definitely-not-the-password");
+  assertEquals(res.status, 401);
+  assertEquals((await res.json()).error, "unauthorized");
+});
+
+Deno.test("blocks after too many failures, including non-verifyOnly uploads", async () => {
+  // ADMIN_POLICY allows 10 failures per 15 minutes. Earlier tests in this file
+  // already recorded some, so drive the counter well past the threshold rather
+  // than assuming an exact remainder.
+  for (let i = 0; i < 12; i++) {
+    const res = await verify(`wrong-${i}`);
+    await res.body?.cancel();
+  }
+
+  const blocked = await verify(PASSWORD);
+  assertEquals(blocked.status, 429);
+  assertEquals((await blocked.json()).error, "too_many_attempts");
+
+  // Attaching a file must not bypass the block.
+  const withFile = await upload(csv(ROW_A));
+  assertEquals(withFile.status, 429);
+  await withFile.body?.cancel();
+});
+
+Deno.test("admin blocking does not affect participant logins", async () => {
+  // The previous test drove admin_attempts past its threshold. Participant
+  // logins key on login_attempts and must be unaffected.
+  const res = await lookup("존재하지않는사람", "AAAAAA");
+  assertEquals(res.status, 401);
+  assertEquals((await res.json()).error, "invalid_credentials");
 });

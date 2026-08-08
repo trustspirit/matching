@@ -3,8 +3,10 @@ import { createServiceClient } from "../_shared/db.ts";
 import { DUMMY_SALT, hashCode, timingSafeEqual } from "../_shared/hash.ts";
 import {
   clientIp,
+  getIpSalt,
   hashIp,
   isRateLimited,
+  PARTICIPANT_POLICY,
   recordAttempt,
 } from "../_shared/rateLimit.ts";
 import { isValidCode, normalizeCode } from "../_shared/lib/code.ts";
@@ -48,9 +50,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   const db = createServiceClient();
-  const ipHash = await hashIp(clientIp(req));
 
-  if (await isRateLimited(db, ipHash)) {
+  // A null salt means rate limiting is unavailable this request. Fail open:
+  // locking every participant out during the event is worse than briefly
+  // losing the throttle (same reasoning as isRateLimited below).
+  const salt = await getIpSalt(db);
+  const ipHash = salt === null ? null : await hashIp(clientIp(req), salt);
+
+  if (ipHash !== null && await isRateLimited(db, ipHash, PARTICIPANT_POLICY)) {
     return jsonResponse(req, { error: "too_many_attempts", retryAfter: 60 }, 429);
   }
 
@@ -83,7 +90,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
   if (matched === null) {
     // Burn one hash so an unknown name costs the same as a wrong code.
     await hashCode(DUMMY_SALT, code);
-    await recordAttempt(db, ipHash, false);
+    if (ipHash !== null) {
+      await recordAttempt(db, ipHash, false, PARTICIPANT_POLICY);
+    }
     return jsonResponse(req, { error: "invalid_credentials" }, 401);
   }
 
@@ -95,7 +104,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return jsonResponse(req, { error: "server_error" }, 500);
   }
 
-  await recordAttempt(db, ipHash, true);
+  if (ipHash !== null) {
+    await recordAttempt(db, ipHash, true, PARTICIPANT_POLICY);
+  }
 
   const matches: MatchView[] = (rows ?? []).map((row) => ({
     session: row.session as MatchView["session"],

@@ -1,5 +1,10 @@
 import { type FormEvent, useState } from "react";
-import { adminImport, ApiError, type ImportResponse } from "../api/client";
+import {
+  adminImport,
+  adminVerify,
+  ApiError,
+  type ImportResponse,
+} from "../api/client";
 import { Button } from "../design/Button";
 import { Card } from "../design/Card";
 import { TextInput } from "../design/TextInput";
@@ -9,6 +14,7 @@ const MESSAGES: Record<string, string> = {
   invalid_csv: "CSV에 오류가 있어 아무것도 반영하지 않았습니다.",
   invalid_request: "파일을 확인해주세요.",
   network_error: "연결에 실패했습니다. 다시 시도해주세요.",
+  too_many_attempts: "시도가 너무 많습니다. 잠시 후 다시 시도해주세요.",
   server_error: "서버 오류가 발생했습니다.",
   missing_api_url: "사이트 설정이 완료되지 않았습니다.",
 };
@@ -28,12 +34,35 @@ function downloadCsv(content: string): void {
 
 export function Admin() {
   const [password, setPassword] = useState("");
+  // Screen-switching flag only. There is no session: the password stays in
+  // memory and is re-sent with the upload, and the server re-authenticates
+  // every request. A refresh returns to the entry screen.
+  const [authed, setAuthed] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [regenerate, setRegenerate] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [details, setDetails] = useState<string[]>([]);
   const [result, setResult] = useState<ImportResponse | null>(null);
+
+  async function handleEnter(event: FormEvent) {
+    event.preventDefault();
+    if (password === "" || loading) return;
+    setLoading(true);
+    setError(undefined);
+    try {
+      await adminVerify(password);
+      setAuthed(true);
+    } catch (caught) {
+      if (caught instanceof ApiError) {
+        setError(MESSAGES[caught.code] ?? MESSAGES.server_error);
+      } else {
+        setError(MESSAGES.network_error);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -50,6 +79,10 @@ export function Admin() {
       if (caught instanceof ApiError) {
         setError(MESSAGES[caught.code] ?? MESSAGES.server_error);
         setDetails(caught.details ?? []);
+        // The password stopped working mid-session (rotated, or the functions
+        // were redeployed). Send the operator back to the entry screen rather
+        // than leaving them on an upload form that can only fail.
+        if (caught.code === "unauthorized") setAuthed(false);
       } else {
         setError(MESSAGES.network_error);
       }
@@ -64,16 +97,35 @@ export function Admin() {
 
       <div className="mt-xl">
         <Card>
-          <form onSubmit={handleSubmit} className="flex flex-col gap-lg">
-            <TextInput
-              label="관리자 비밀번호"
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              autoComplete="current-password"
-              required
-            />
+          {!authed ? (
+            <form onSubmit={handleEnter} className="flex flex-col gap-lg">
+              <TextInput
+                label="관리자 비밀번호"
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                autoComplete="current-password"
+                required
+              />
 
+              <Button
+                type="submit"
+                fullWidth
+                disabled={password === ""}
+                loading={loading}
+                loadingText="확인 중…"
+              >
+                들어가기
+              </Button>
+
+              {error !== undefined && (
+                <p role="alert" className="type-body-sm text-error">
+                  {error}
+                </p>
+              )}
+            </form>
+          ) : (
+          <form onSubmit={handleSubmit} className="flex flex-col gap-lg">
             <div className="flex flex-col gap-xs">
               <label htmlFor="csv" className="type-body-strong text-ink">
                 매칭 CSV
@@ -128,6 +180,7 @@ export function Admin() {
               </div>
             )}
           </form>
+          )}
         </Card>
       </div>
 
