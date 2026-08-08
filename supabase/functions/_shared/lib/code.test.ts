@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   CODE_ALPHABET,
   CODE_LENGTH,
-  formatCode,
   generateCode,
   isValidCode,
   normalizeCode,
@@ -88,20 +87,5 @@ describe("isValidCode", () => {
     // 0, 1, I, L, O, U are deliberately not in the alphabet.
     expect(isValidCode("K7M2Q0")).toBe(false);
     expect(isValidCode("K7M2QI")).toBe(false);
-  });
-});
-
-describe("formatCode", () => {
-  it("inserts a hyphen after three characters", () => {
-    expect(formatCode("K7M2QX")).toBe("K7M-2QX");
-  });
-
-  it("leaves short partial input unhyphenated", () => {
-    expect(formatCode("K7")).toBe("K7");
-    expect(formatCode("K7M")).toBe("K7M");
-  });
-
-  it("normalizes before formatting", () => {
-    expect(formatCode("k7m2qx")).toBe("K7M-2QX");
   });
 });

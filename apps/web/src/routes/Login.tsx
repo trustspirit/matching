@@ -1,6 +1,6 @@
 import { type FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { formatCode, isValidCode, normalizeCode } from "@shared/code.ts";
+import { isValidCode, normalizeCode } from "@shared/code.ts";
 import { ApiError, lookup } from "../api/client";
 import { Button } from "../design/Button";
 import { TextInput } from "../design/TextInput";
@@ -69,15 +69,13 @@ export function Login() {
           <TextInput
             label="코드"
             value={code}
-            // Reformatting on every keystroke keeps the hyphen in place without
-            // fighting the user's cursor, because the value is fully derived.
-            onChange={(event) => setCode(formatCode(event.target.value))}
-            placeholder="K7M-2QX"
+            onChange={(event) => setCode(normalizeCode(event.target.value))}
+            placeholder="K7M2QX"
             inputMode="text"
             autoCapitalize="characters"
             autoComplete="off"
             spellCheck={false}
-            maxLength={7}
+            maxLength={6}
             error={error}
             required
           />

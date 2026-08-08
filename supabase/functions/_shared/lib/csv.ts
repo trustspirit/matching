@@ -1,4 +1,3 @@
-import { formatCode } from "./code.ts";
 import { normalizeName } from "./name.ts";
 import {
   type CodeRow,
@@ -225,7 +224,7 @@ export function buildCodesCsv(rows: CodeRow[]): string {
         row.email ?? "",
         // A null code means the participant kept the code they already had;
         // the plaintext is unrecoverable at that point.
-        row.code === null ? "기존 코드 유지" : formatCode(row.code),
+        row.code === null ? "기존 코드 유지" : row.code,
       ].map(escapeCsvField).join(","),
     );
   }

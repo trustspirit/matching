@@ -183,7 +183,7 @@ describe("buildCodesCsv", () => {
     ]);
     const lines = csv.split("\n");
     expect(lines[0]).toBe("이름,성별,연락처,이메일,코드");
-    expect(lines[1]).toBe("김효준,남,010-389-5611,konanok20@gmail.com,K7M-2QX");
+    expect(lines[1]).toBe("김효준,남,010-389-5611,konanok20@gmail.com,K7M2QX");
   });
 
   it("marks participants who kept an existing code", () => {
