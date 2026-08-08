@@ -5,7 +5,39 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="robots" content="noindex, nofollow" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- iOS ignores the SVG icon and composites this onto an opaque tile, so
+         it carries its own background rather than relying on transparency. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>매칭 결과 확인</title>
+
+    <!-- Link preview. The absolute URLs are required: messengers fetch these
+         without a document base, so a relative path resolves against their own
+         host and the preview comes back blank. og:image is a PNG because most
+         messengers, KakaoTalk included, will not render an SVG here.
+         noindex above does not affect any of this -- it stops search engines,
+         while previews are built by the messenger following the pasted link. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="26 KYSA 데이트" />
+    <meta property="og:title" content="매칭 결과 확인하기" />
+    <meta
+      property="og:description"
+      content="전달받은 코드를 입력하면 상대방과 시간, 장소를 볼 수 있어요."
+    />
+    <meta property="og:url" content="https://matching-5a0.pages.dev/" />
+    <meta property="og:image" content="https://matching-5a0.pages.dev/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:locale" content="ko_KR" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="매칭 결과 확인하기" />
+    <meta
+      name="twitter:description"
+      content="전달받은 코드를 입력하면 상대방과 시간, 장소를 볼 수 있어요."
+    />
+    <meta
+      name="twitter:image"
+      content="https://matching-5a0.pages.dev/og.png"
+    />
   </head>
   <body>
     <div id="root"></div>
