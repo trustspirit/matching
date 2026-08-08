@@ -1,6 +1,11 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import type { AdminMatchRow, AdminParticipantRow } from "@shared/types.ts";
-import { adminData, adminVerify, ApiError } from "../api/client";
+import { adminData, adminLogin, adminLogout, ApiError } from "../api/client";
+import {
+  clearAdminToken,
+  loadAdminToken,
+  saveAdminToken,
+} from "../lib/adminSession";
 import { Button } from "../design/Button";
 import { Card } from "../design/Card";
 import { TextInput } from "../design/TextInput";
@@ -26,9 +31,9 @@ const TABS: { key: Tab; label: string }[] = [
 
 export function Admin() {
   const [password, setPassword] = useState("");
-  // Screen-switching flag only. There is no session: the password stays in
-  // memory and is re-sent with every request.
-  const [authed, setAuthed] = useState(false);
+  // The token is the session. It is restored from localStorage on mount so a
+  // reload does not send the operator back to the gate.
+  const [token, setToken] = useState<string | null>(() => loadAdminToken());
   const [tab, setTab] = useState<Tab>("matches");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | undefined>();
@@ -37,13 +42,14 @@ export function Admin() {
   const [participants, setParticipants] = useState<AdminParticipantRow[]>([]);
 
   const reload = useCallback(async () => {
+    if (token === null) return;
     try {
       const m = await adminData<{ matches: AdminMatchRow[] }>(
-        password,
+        token,
         "list_matches",
       );
       const p = await adminData<{ participants: AdminParticipantRow[] }>(
-        password,
+        token,
         "list_participants",
       );
       setMatches(m.matches);
@@ -51,16 +57,20 @@ export function Admin() {
     } catch (caught) {
       if (caught instanceof ApiError) {
         setError(MESSAGES[caught.code] ?? MESSAGES.server_error);
-        if (caught.code === "unauthorized") setAuthed(false);
+        // Expired or revoked elsewhere; drop it and fall back to the gate.
+        if (caught.code === "unauthorized") {
+          clearAdminToken();
+          setToken(null);
+        }
       } else {
         setError(MESSAGES.network_error);
       }
     }
-  }, [password]);
+  }, [token]);
 
   useEffect(() => {
-    if (authed) void reload();
-  }, [authed, reload]);
+    if (token !== null) void reload();
+  }, [token, reload]);
 
   async function handleEnter(event: FormEvent) {
     event.preventDefault();
@@ -68,8 +78,11 @@ export function Admin() {
     setLoading(true);
     setError(undefined);
     try {
-      await adminVerify(password);
-      setAuthed(true);
+      const issued = await adminLogin(password);
+      saveAdminToken(issued);
+      setToken(issued);
+      // The password is not needed again; the token carries the session.
+      setPassword("");
     } catch (caught) {
       if (caught instanceof ApiError) {
         setError(MESSAGES[caught.code] ?? MESSAGES.server_error);
@@ -81,7 +94,7 @@ export function Admin() {
     }
   }
 
-  if (!authed) {
+  if (token === null) {
     return (
       <main className="mx-auto flex w-full max-w-[640px] flex-col px-lg py-xxl">
         <h1 className="type-heading-xl text-ink">매칭 데이터 관리</h1>
@@ -115,28 +128,49 @@ export function Admin() {
     );
   }
 
+  async function handleLogout(): Promise<void> {
+    // Narrowed by the `token === null` early return above, but TypeScript
+    // cannot see that from inside a nested function declaration.
+    if (token !== null) await adminLogout(token);
+    clearAdminToken();
+    setToken(null);
+    setMatches([]);
+    setParticipants([]);
+  }
+
   return (
     <main className="mx-auto flex w-full max-w-[900px] flex-col px-lg py-xxl">
       <h1 className="type-heading-xl text-ink">매칭 데이터 관리</h1>
 
-      <div role="tablist" className="mt-xl flex flex-wrap gap-xs">
-        {TABS.map(({ key, label }) => (
-          <button
-            key={key}
-            role="tab"
+      <div className="mt-xl flex flex-wrap items-center gap-xs">
+        <div role="tablist" className="flex flex-wrap gap-xs">
+          {TABS.map(({ key, label }) => (
+            <button
+              key={key}
+              role="tab"
+              type="button"
+              aria-selected={tab === key}
+              onClick={() => setTab(key)}
+              className={[
+                "type-body-strong rounded-md px-lg py-md",
+                tab === key
+                  ? "bg-surface-dark text-on-primary"
+                  : "bg-secondary-bg text-ink",
+              ].join(" ")}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="ml-auto">
+          <Button
             type="button"
-            aria-selected={tab === key}
-            onClick={() => setTab(key)}
-            className={[
-              "type-body-strong rounded-md px-lg py-md",
-              tab === key
-                ? "bg-surface-dark text-on-primary"
-                : "bg-secondary-bg text-ink",
-            ].join(" ")}
+            variant="tertiary"
+            onClick={() => void handleLogout()}
           >
-            {label}
-          </button>
-        ))}
+            로그아웃
+          </Button>
+        </div>
       </div>
 
       {error !== undefined && (
@@ -146,7 +180,7 @@ export function Admin() {
       <div className="mt-xl">
         {tab === "matches" && (
           <MatchesTab
-            password={password}
+            token={token}
             matches={matches}
             participants={participants}
             onChanged={() => void reload()}
@@ -154,14 +188,14 @@ export function Admin() {
         )}
         {tab === "participants" && (
           <ParticipantsTab
-            password={password}
+            token={token}
             participants={participants}
             onChanged={() => void reload()}
           />
         )}
         {tab === "csv" && (
           <CsvTab
-            password={password}
+            token={token}
             matchCount={matches.length}
             onImported={() => void reload()}
           />

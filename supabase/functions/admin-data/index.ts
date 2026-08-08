@@ -5,6 +5,12 @@ import { hashCode, randomSalt, timingSafeEqual } from "../_shared/hash.ts";
 import { generateCode } from "../_shared/lib/code.ts";
 import { normalizeName } from "../_shared/lib/name.ts";
 import {
+  bearerToken,
+  issueSession,
+  revokeSession,
+  verifySession,
+} from "../_shared/session.ts";
+import {
   ADMIN_POLICY,
   clientIp,
   getIpSalt,
@@ -44,10 +50,10 @@ interface ParticipantDbRow {
   email: string | null;
 }
 
-function isAuthorized(req: Request): boolean {
+/** Only `login` uses this. Every other action authenticates with a token. */
+function isPasswordCorrect(req: Request): boolean {
   const expected = Deno.env.get("ADMIN_PASSWORD") ?? "";
-  const header = req.headers.get("Authorization") ?? "";
-  const provided = header.startsWith("Bearer ") ? header.slice(7) : "";
+  const provided = bearerToken(req);
   if (expected === "" || provided === "") return false;
   return timingSafeEqual(provided, expected);
 }
@@ -222,15 +228,6 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return jsonResponse(req, { error: "too_many_attempts", retryAfter: 900 }, 429);
   }
 
-  // Shares admin-import's counter on purpose: to an attacker, guessing the
-  // password against either function is the same thing.
-  if (!isAuthorized(req)) {
-    if (ipHash !== null) {
-      await recordAttempt(db, ipHash, false, ADMIN_POLICY);
-    }
-    return jsonResponse(req, { error: "unauthorized" }, 401);
-  }
-
   let payload: unknown;
   try {
     payload = await req.json();
@@ -238,6 +235,30 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return jsonResponse(req, { error: "invalid_request" }, 400);
   }
   const action = (payload as { action?: unknown }).action;
+
+  if (action === "login") {
+    // Rate limiting keys on password failures only. A stale token is not an
+    // attack, and counting it would lock the admin out of their own re-login.
+    if (!isPasswordCorrect(req)) {
+      if (ipHash !== null) {
+        await recordAttempt(db, ipHash, false, ADMIN_POLICY);
+      }
+      return jsonResponse(req, { error: "unauthorized" }, 401);
+    }
+    const issued = await issueSession(db);
+    if (issued === null) return jsonResponse(req, { error: "server_error" }, 500);
+    return jsonResponse(req, { token: issued });
+  }
+
+  const presented = bearerToken(req);
+  if (!await verifySession(db, presented)) {
+    return jsonResponse(req, { error: "unauthorized" }, 401);
+  }
+
+  if (action === "logout") {
+    await revokeSession(db, presented);
+    return jsonResponse(req, { ok: true });
+  }
 
   if (action === "list_matches") {
     const matches = await listMatches(db);

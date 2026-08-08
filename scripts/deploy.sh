@@ -90,12 +90,12 @@ fi
 echo "    ok"
 
 echo "==> smoke test 3/5: the admin password actually took effect"
-status=$(curl -sS -o /dev/null -w '%{http_code}' \
-  -X POST "${FUNCTIONS_URL}/admin-import" \
+login=$(curl -sS -X POST "${FUNCTIONS_URL}/admin-data" \
   -H "Authorization: Bearer ${ADMIN_PASSWORD}" \
-  -F "verifyOnly=true")
-if [[ "$status" != "200" ]]; then
-  echo "FAIL: verifyOnly returned ${status}, expected 200" >&2
+  -H "Content-Type: application/json" \
+  -d '{"action":"login"}')
+if ! grep -q '"token"' <<<"$login"; then
+  echo "FAIL: login did not return a token, got: $login" >&2
   echo "The secret was not applied, or the functions were not redeployed" >&2
   echo "after it changed." >&2
   exit 1
@@ -103,8 +103,11 @@ fi
 echo "    ok"
 
 echo "==> smoke test 4/5: admin-data reaches the function, not the gateway"
+# Reuses the token from the previous check: admin-data no longer accepts the
+# password on anything but `login`.
+tok=$(sed -n 's/.*"token":"\([^"]*\)".*/\1/p' <<<"$login")
 adm=$(curl -sS -X POST "${FUNCTIONS_URL}/admin-data" \
-  -H "Authorization: Bearer ${ADMIN_PASSWORD}" \
+  -H "Authorization: Bearer ${tok}" \
   -H "Content-Type: application/json" \
   -d '{"action":"list_matches"}')
 if ! grep -q '"matches"' <<<"$adm"; then

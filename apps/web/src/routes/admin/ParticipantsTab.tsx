@@ -54,13 +54,13 @@ interface Deleting {
 }
 
 interface ParticipantsTabProps {
-  password: string;
+  token: string;
   participants: AdminParticipantRow[];
   onChanged: () => void;
 }
 
 export function ParticipantsTab({
-  password,
+  token,
   participants,
   onChanged,
 }: ParticipantsTabProps) {
@@ -87,13 +87,13 @@ export function ParticipantsTab({
     try {
       if (editing === "new") {
         const created = await adminData<{ id: string; code: string }>(
-          password,
+          token,
           "create_participant",
           { ...draft },
         );
         setRevealed({ name: draft.displayName, code: created.code });
       } else {
-        await adminData(password, "update_participant", {
+        await adminData(token, "update_participant", {
           id: editing,
           ...draft,
         });
@@ -113,7 +113,7 @@ export function ParticipantsTab({
     setError(undefined);
     try {
       const result = await adminData<{ code: string }>(
-        password,
+        token,
         "regenerate_code",
         { id: row.id },
       );
@@ -131,7 +131,7 @@ export function ParticipantsTab({
     setError(undefined);
     try {
       const result = await adminData<{ matches: ImpactRow[] }>(
-        password,
+        token,
         "participant_impact",
         { id: row.id },
       );
@@ -148,7 +148,7 @@ export function ParticipantsTab({
     setBusy(true);
     setError(undefined);
     try {
-      await adminData(password, "delete_participant", { id: deleting.row.id });
+      await adminData(token, "delete_participant", { id: deleting.row.id });
       setDeleting(null);
       onChanged();
     } catch (caught) {

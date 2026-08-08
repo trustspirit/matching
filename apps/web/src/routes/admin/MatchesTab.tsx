@@ -52,14 +52,14 @@ function toDraft(row: AdminMatchRow): Draft {
 }
 
 interface MatchesTabProps {
-  password: string;
+  token: string;
   matches: AdminMatchRow[];
   participants: AdminParticipantRow[];
   onChanged: () => void;
 }
 
 export function MatchesTab({
-  password,
+  token,
   matches,
   participants,
   onChanged,
@@ -84,9 +84,9 @@ export function MatchesTab({
     setError(undefined);
     try {
       if (editing === "new") {
-        await adminData(password, "create_match", { ...draft });
+        await adminData(token, "create_match", { ...draft });
       } else {
-        await adminData(password, "update_match", { id: editing, ...draft });
+        await adminData(token, "update_match", { id: editing, ...draft });
       }
       setEditing(null);
       onChanged();
@@ -103,7 +103,7 @@ export function MatchesTab({
     setBusy(true);
     setError(undefined);
     try {
-      await adminData(password, "delete_match", { id });
+      await adminData(token, "delete_match", { id });
       onChanged();
     } catch (caught) {
       report(caught);

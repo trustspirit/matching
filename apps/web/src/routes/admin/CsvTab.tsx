@@ -25,13 +25,13 @@ function downloadCsv(content: string): void {
 }
 
 interface CsvTabProps {
-  password: string;
+  token: string;
   /** Rows that this upload would delete. Zero means a first-time import. */
   matchCount: number;
   onImported: () => void;
 }
 
-export function CsvTab({ password, matchCount, onImported }: CsvTabProps) {
+export function CsvTab({ token, matchCount, onImported }: CsvTabProps) {
   const [file, setFile] = useState<File | null>(null);
   const [regenerate, setRegenerate] = useState(false);
   const [acknowledged, setAcknowledged] = useState(false);
@@ -52,7 +52,7 @@ export function CsvTab({ password, matchCount, onImported }: CsvTabProps) {
     setDetails([]);
     setResult(null);
     try {
-      const response = await adminImport(password, file, regenerate);
+      const response = await adminImport(token, file, regenerate);
       setResult(response);
       downloadCsv(response.codesCsv);
       onImported();
