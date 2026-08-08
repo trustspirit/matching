@@ -90,3 +90,122 @@ Deno.test("lists participants", async () => {
   assertEquals(male.gender, "M");
   assertEquals(male.birthdate, "1999-01-02");
 });
+
+/** Looks up the seeded participants' ids for match mutations. */
+async function ids(): Promise<{ maleId: string; femaleId: string }> {
+  const body = await (await call("list_participants")).json();
+  const male = body.participants.find(
+    (p: { displayName: string }) => p.displayName === "표남",
+  );
+  const female = body.participants.find(
+    (p: { displayName: string }) => p.displayName === "표여",
+  );
+  assert(male && female, "seeded participants missing");
+  return { maleId: male.id, femaleId: female.id };
+}
+
+Deno.test("creates a match and it appears in the listing", async () => {
+  await seed();
+  const { maleId, femaleId } = await ids();
+  const res = await call("create_match", {
+    session: "2부",
+    timeRange: "22:40~23:00",
+    arriveBy: "22:40",
+    venue: "골드",
+    team: "9조",
+    maleId,
+    femaleId,
+  });
+  assertEquals(res.status, 200);
+  const created = await res.json();
+  assert(typeof created.id === "string");
+
+  const list = await (await call("list_matches")).json();
+  const found = list.matches.find((m: { id: string }) => m.id === created.id);
+  assert(found, "created match not in listing");
+  assertEquals(found.venue, "골드");
+  assertEquals(found.team, "9조");
+});
+
+Deno.test("rejects a match with a blank time range", async () => {
+  const { maleId, femaleId } = await ids();
+  const res = await call("create_match", {
+    session: "1부",
+    timeRange: "",
+    arriveBy: "21:50",
+    venue: "소극장",
+    team: "1조",
+    maleId,
+    femaleId,
+  });
+  assertEquals(res.status, 400);
+  assertEquals((await res.json()).error, "invalid_request");
+});
+
+Deno.test("updates a match and the change is visible in the listing", async () => {
+  const list = await (await call("list_matches")).json();
+  const row = list.matches.find((m: { maleName: string }) => m.maleName === "표남");
+  assert(row);
+
+  const res = await call("update_match", {
+    id: row.id,
+    session: row.session,
+    timeRange: row.timeRange,
+    arriveBy: row.arriveBy,
+    venue: row.venue,
+    team: "7조",
+    maleId: row.maleId,
+    femaleId: row.femaleId,
+  });
+  assertEquals(res.status, 200);
+
+  const after = await (await call("list_matches")).json();
+  const updated = after.matches.find((m: { id: string }) => m.id === row.id);
+  assertEquals(updated.team, "7조");
+});
+
+Deno.test("clears the team when it is sent empty", async () => {
+  const list = await (await call("list_matches")).json();
+  const row = list.matches.find((m: { team: string | null }) => m.team === "7조");
+  assert(row);
+
+  const res = await call("update_match", { ...row, team: "" });
+  assertEquals(res.status, 200);
+  await res.body?.cancel();
+
+  const after = await (await call("list_matches")).json();
+  const updated = after.matches.find((m: { id: string }) => m.id === row.id);
+  // An empty team means "not assigned yet", stored as NULL so the participant
+  // screen can show "조 배정 예정".
+  assertEquals(updated.team, null);
+});
+
+Deno.test("deletes a match without touching the participants", async () => {
+  const before = await (await call("list_matches")).json();
+  const target = before.matches[0];
+  assert(target);
+
+  const res = await call("delete_match", { id: target.id });
+  assertEquals(res.status, 200);
+  await res.body?.cancel();
+
+  const after = await (await call("list_matches")).json();
+  assertEquals(
+    after.matches.filter((m: { id: string }) => m.id === target.id).length,
+    0,
+  );
+
+  // The participants must still exist; only the match row was removed.
+  const people = await (await call("list_participants")).json();
+  assert(
+    people.participants.some((p: { id: string }) => p.id === target.maleId),
+  );
+});
+
+Deno.test("rejects a delete for an unknown id", async () => {
+  const res = await call("delete_match", {
+    id: "00000000-0000-0000-0000-000000000000",
+  });
+  assertEquals(res.status, 404);
+  assertEquals((await res.json()).error, "not_found");
+});

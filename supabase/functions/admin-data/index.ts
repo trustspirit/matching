@@ -95,6 +95,43 @@ async function listParticipants(
   }));
 }
 
+interface MatchInput {
+  session: string;
+  timeRange: string;
+  arriveBy: string;
+  venue: string;
+  team: string;
+  maleId: string;
+  femaleId: string;
+}
+
+/**
+ * Returns the validated fields, or null when anything required is missing.
+ * timeRange and arriveBy are both required here even though the CSV path
+ * derives them from the session: on a form where both boxes are visible,
+ * filling one of them silently would make the saved value unpredictable.
+ */
+function readMatchInput(payload: unknown): MatchInput | null {
+  const p = payload as Record<string, unknown>;
+  const str = (key: string): string => typeof p[key] === "string" ? p[key] : "";
+
+  const input: MatchInput = {
+    session: str("session"),
+    timeRange: str("timeRange").trim(),
+    arriveBy: str("arriveBy").trim(),
+    venue: str("venue").trim(),
+    team: str("team").trim(),
+    maleId: str("maleId"),
+    femaleId: str("femaleId"),
+  };
+
+  if (input.session !== "1부" && input.session !== "2부") return null;
+  if (input.timeRange === "" || input.arriveBy === "") return null;
+  if (input.venue === "") return null;
+  if (input.maleId === "" || input.femaleId === "") return null;
+  return input;
+}
+
 Deno.serve(async (req: Request): Promise<Response> => {
   if (req.method === "OPTIONS") return handlePreflight(req);
   if (req.method !== "POST") {
@@ -139,6 +176,86 @@ Deno.serve(async (req: Request): Promise<Response> => {
       return jsonResponse(req, { error: "server_error" }, 500);
     }
     return jsonResponse(req, { participants });
+  }
+
+  if (action === "create_match") {
+    const input = readMatchInput(payload);
+    if (input === null) return jsonResponse(req, { error: "invalid_request" }, 400);
+
+    const { data, error } = await db
+      .from("matches")
+      .insert({
+        session: input.session,
+        time_range: input.timeRange,
+        arrive_by: input.arriveBy,
+        venue: input.venue,
+        // Empty means "not assigned yet"; the column is nullable and the
+        // participant screen renders NULL as "조 배정 예정".
+        team: input.team === "" ? null : input.team,
+        male_id: input.maleId,
+        female_id: input.femaleId,
+      })
+      .select("id")
+      .single<{ id: string }>();
+
+    if (error || data === null) {
+      console.error("create_match failed", error);
+      return jsonResponse(req, { error: "server_error" }, 500);
+    }
+    return jsonResponse(req, { id: data.id });
+  }
+
+  if (action === "update_match") {
+    const id = (payload as { id?: unknown }).id;
+    if (typeof id !== "string" || id === "") {
+      return jsonResponse(req, { error: "invalid_request" }, 400);
+    }
+    const input = readMatchInput(payload);
+    if (input === null) return jsonResponse(req, { error: "invalid_request" }, 400);
+
+    const { data, error } = await db
+      .from("matches")
+      .update({
+        session: input.session,
+        time_range: input.timeRange,
+        arrive_by: input.arriveBy,
+        venue: input.venue,
+        team: input.team === "" ? null : input.team,
+        male_id: input.maleId,
+        female_id: input.femaleId,
+      })
+      .eq("id", id)
+      .select("id");
+
+    if (error) {
+      console.error("update_match failed", error);
+      return jsonResponse(req, { error: "server_error" }, 500);
+    }
+    if ((data ?? []).length === 0) {
+      return jsonResponse(req, { error: "not_found" }, 404);
+    }
+    return jsonResponse(req, { ok: true });
+  }
+
+  if (action === "delete_match") {
+    const id = (payload as { id?: unknown }).id;
+    if (typeof id !== "string" || id === "") {
+      return jsonResponse(req, { error: "invalid_request" }, 400);
+    }
+    const { data, error } = await db
+      .from("matches")
+      .delete()
+      .eq("id", id)
+      .select("id");
+
+    if (error) {
+      console.error("delete_match failed", error);
+      return jsonResponse(req, { error: "server_error" }, 500);
+    }
+    if ((data ?? []).length === 0) {
+      return jsonResponse(req, { error: "not_found" }, 404);
+    }
+    return jsonResponse(req, { ok: true });
   }
 
   return jsonResponse(req, { error: "invalid_request" }, 400);
