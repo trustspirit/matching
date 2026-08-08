@@ -29,6 +29,10 @@
 
   --color-focus-outer: #435ee5;
   --color-error: #9e0a0a;
+  /* For actions that are reversible but throw something away -- reissuing a
+     code invalidates the one the participant already has. Dark enough to
+     clear 7:1 on the page surface, so it reads as a label and not a tint. */
+  --color-caution: #7a4700;
 
   --radius-sm: 8px;
   --radius-md: 16px;
@@ -124,6 +128,15 @@ html,
 body,
 #root {
   height: 100%;
+}
+
+html {
+  /* The admin tabs hold wildly different row counts, so switching between them
+     adds or removes the vertical scrollbar and the whole page jumps sideways by
+     its width. Reserving the gutter permanently keeps the layout still.
+     Overlay scrollbars ignore this, which is fine -- they take no width and
+     cause no shift in the first place. */
+  scrollbar-gutter: stable;
 }
 
 body {
