@@ -119,7 +119,7 @@ export function Admin() {
     <main className="mx-auto flex w-full max-w-[900px] flex-col px-lg py-xxl">
       <h1 className="type-heading-xl text-ink">매칭 데이터 관리</h1>
 
-      <div role="tablist" className="mt-xl flex gap-xs">
+      <div role="tablist" className="mt-xl flex flex-wrap gap-xs">
         {TABS.map(({ key, label }) => (
           <button
             key={key}

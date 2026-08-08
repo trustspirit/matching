@@ -7,6 +7,7 @@ import type {
 import { adminData, ApiError } from "../../api/client";
 import { Button } from "../../design/Button";
 import { Card } from "../../design/Card";
+import { Select } from "../../design/Select";
 import { ParticipantPicker } from "./ParticipantPicker";
 
 const MESSAGES: Record<string, string> = {
@@ -117,19 +118,20 @@ export function MatchesTab({
         key={key}
         className="flex flex-col gap-md border-t border-hairline py-lg"
       >
-        <div className="flex flex-wrap gap-md">
-          <label className="flex flex-col gap-xs">
-            <span className="type-caption-md text-mute">부</span>
-            <select
-              value={draft.session}
-              onChange={(e) =>
-                setDraft({ ...draft, session: e.target.value as Session })}
-              className="type-body-md h-11 rounded-md border border-ash bg-canvas px-md text-ink"
-            >
-              <option value="1부">1부</option>
-              <option value="2부">2부</option>
-            </select>
-          </label>
+        {/* One column on a phone, wrapping row from md up. The inputs are
+            full-width by default and only take a fixed width once there is
+            room for several on a line. */}
+        <div className="flex flex-col gap-md md:flex-row md:flex-wrap">
+          <Select
+            label="부"
+            value={draft.session}
+            onChange={(e) =>
+              setDraft({ ...draft, session: e.target.value as Session })}
+            className="md:w-24"
+          >
+            <option value="1부">1부</option>
+            <option value="2부">2부</option>
+          </Select>
 
           {/* Written out rather than mapped over a field list: a computed key
               in an object spread widens to an index signature, so
@@ -140,7 +142,7 @@ export function MatchesTab({
               value={draft.timeRange}
               placeholder="21:50~22:20"
               onChange={(e) => setDraft({ ...draft, timeRange: e.target.value })}
-              className="type-body-md h-11 w-32 rounded-md border border-ash bg-canvas px-md text-ink"
+              className="type-body-md h-11 w-full rounded-md border border-ash bg-canvas px-md text-ink md:w-36"
             />
           </label>
           <label className="flex flex-col gap-xs">
@@ -149,7 +151,7 @@ export function MatchesTab({
               value={draft.arriveBy}
               placeholder="21:50"
               onChange={(e) => setDraft({ ...draft, arriveBy: e.target.value })}
-              className="type-body-md h-11 w-32 rounded-md border border-ash bg-canvas px-md text-ink"
+              className="type-body-md h-11 w-full rounded-md border border-ash bg-canvas px-md text-ink md:w-28"
             />
           </label>
           <label className="flex flex-col gap-xs">
@@ -158,7 +160,7 @@ export function MatchesTab({
               value={draft.venue}
               placeholder="소극장"
               onChange={(e) => setDraft({ ...draft, venue: e.target.value })}
-              className="type-body-md h-11 w-32 rounded-md border border-ash bg-canvas px-md text-ink"
+              className="type-body-md h-11 w-full rounded-md border border-ash bg-canvas px-md text-ink md:w-32"
             />
           </label>
           <label className="flex flex-col gap-xs">
@@ -167,12 +169,12 @@ export function MatchesTab({
               value={draft.team}
               placeholder="3조"
               onChange={(e) => setDraft({ ...draft, team: e.target.value })}
-              className="type-body-md h-11 w-32 rounded-md border border-ash bg-canvas px-md text-ink"
+              className="type-body-md h-11 w-full rounded-md border border-ash bg-canvas px-md text-ink md:w-24"
             />
           </label>
         </div>
 
-        <div className="flex flex-wrap gap-md">
+        <div className="flex flex-col gap-md md:flex-row md:flex-wrap">
           <ParticipantPicker
             label="남성"
             gender="M"
@@ -230,17 +232,30 @@ export function MatchesTab({
       <div className="mt-lg flex flex-col">
         {matches.map((row) =>
           editing === row.id ? editor(row.id) : (
+            // Stacked card on a phone, single table row from md up. The inner
+            // wrappers group related fields while stacked; `md:contents` makes
+            // them disappear from the layout at md so their children line up
+            // as columns of one row instead of duplicating the markup.
             <div
               key={row.id}
-              className="type-body-sm flex flex-wrap items-center gap-md border-t border-hairline py-md text-body"
+              className="type-body-sm flex flex-col gap-xs border-t border-hairline py-md text-body md:flex-row md:flex-wrap md:items-center md:gap-md"
             >
-              <span className="w-10 text-ink">{row.session}</span>
-              <span className="w-32">{row.timeRange}</span>
-              <span className="w-24">{row.venue}</span>
-              <span className="w-16">{row.team ?? "미정"}</span>
-              <span className="w-24 text-ink">{row.maleName}</span>
-              <span className="w-24 text-ink">{row.femaleName}</span>
-              <span className="ml-auto flex gap-xs">
+              <div className="flex gap-md md:contents">
+                <span className="type-body-sm-strong text-ink md:w-10 md:font-normal">
+                  {row.session}
+                </span>
+                <span className="text-ink md:w-16">{row.team ?? "미정"}</span>
+              </div>
+              <div className="flex gap-md md:contents">
+                <span className="md:w-32">{row.timeRange}</span>
+                <span className="md:w-24">{row.venue}</span>
+              </div>
+              <div className="flex gap-xs md:contents">
+                <span className="text-ink md:w-24">{row.maleName}</span>
+                <span className="text-mute md:hidden">—</span>
+                <span className="text-ink md:w-24">{row.femaleName}</span>
+              </div>
+              <span className="flex gap-xs md:ml-auto">
                 <Button
                   type="button"
                   variant="tertiary"

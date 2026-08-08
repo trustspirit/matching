@@ -15,15 +15,24 @@ export function ParticipantsTab({ participants }: ParticipantsTabProps) {
 
       <div className="mt-lg flex flex-col">
         {participants.map((p) => (
+          // Stacked card on a phone, single table row from md up. `md:contents`
+          // dissolves the grouping wrappers at md so their children become
+          // columns of one row without duplicating the markup.
           <div
             key={p.id}
-            className="type-body-sm flex flex-wrap items-center gap-md border-t border-hairline py-md text-body"
+            className="type-body-sm flex flex-col gap-xs border-t border-hairline py-md text-body md:flex-row md:flex-wrap md:items-center md:gap-md"
           >
-            <span className="w-24 text-ink">{p.displayName}</span>
-            <span className="w-28">{p.birthdate}</span>
-            <span className="w-8">{p.gender === "M" ? "남" : "여"}</span>
-            <span className="w-36">{p.contact ?? ""}</span>
-            <span className="flex-1 truncate">{p.email ?? ""}</span>
+            <div className="flex gap-md md:contents">
+              <span className="type-body-sm-strong text-ink md:w-24 md:font-normal">
+                {p.displayName}
+              </span>
+              <span className="md:w-28">{p.birthdate}</span>
+              <span className="md:w-8">{p.gender === "M" ? "남" : "여"}</span>
+            </div>
+            <div className="flex flex-col gap-xxs md:contents">
+              <span className="md:w-36">{p.contact ?? ""}</span>
+              <span className="truncate md:flex-1">{p.email ?? ""}</span>
+            </div>
           </div>
         ))}
       </div>
