@@ -233,6 +233,7 @@ export function MatchesTab({
     <Card>
       <div className="flex flex-wrap items-end gap-md">
         <Select
+          compact
           label="부"
           value={sessionFilter}
           onChange={(e) => setSessionFilter(e.target.value)}
@@ -242,6 +243,7 @@ export function MatchesTab({
           {sessions.map((v) => <option key={v} value={v}>{v}</option>)}
         </Select>
         <Select
+          compact
           label="장소"
           value={venueFilter}
           onChange={(e) => setVenueFilter(e.target.value)}

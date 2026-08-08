@@ -530,3 +530,59 @@ Deno.test("rejects a delete for an unknown participant", async () => {
   assertEquals(res.status, 404);
   assertEquals((await res.json()).error, "not_found");
 });
+
+Deno.test("regenerates a subset and leaves the rest alone", async () => {
+  // seed() re-creates 표남/표여; the rename and delete tests above left the
+  // original male row renamed and then removed.
+  await seed();
+  const femaleId = await idOf("표여");
+  const maleId = await idOf("표남");
+
+  const before = {
+    male: (await (await call("regenerate_code", { id: maleId })).json()).code,
+    female: (await (await call("regenerate_code", { id: femaleId })).json()).code,
+  };
+
+  const res = await call("regenerate_codes", { ids: [femaleId] });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.count, 1);
+  assert(body.codesCsv.startsWith("이름,성별,연락처,이메일,코드"));
+
+  // Only the listed participant was reissued.
+  assertEquals((await participantLogin("표여", before.female)).status, 401);
+  assertEquals((await participantLogin("표남", before.male)).status, 200);
+});
+
+Deno.test("regenerates everyone when no ids are given", async () => {
+  const maleId = await idOf("표남");
+  const before = (await (await call("regenerate_code", { id: maleId })).json()).code;
+  assertEquals((await participantLogin("표남", before)).status, 200);
+
+  const res = await call("regenerate_codes");
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assert(body.count >= 2, `expected everyone, got ${body.count}`);
+
+  assertEquals((await participantLogin("표남", before)).status, 401);
+
+  // The returned CSV must carry a working code for each row.
+  const lines = body.codesCsv.split("\n").filter((l: string) => l.trim() !== "");
+  const first = lines[1].split(",");
+  const code = first[first.length - 1];
+  assertEquals((await participantLogin(first[0], code)).status, 200);
+});
+
+Deno.test("rejects an empty id list", async () => {
+  const res = await call("regenerate_codes", { ids: [] });
+  assertEquals(res.status, 400);
+  assertEquals((await res.json()).error, "invalid_request");
+});
+
+Deno.test("reports not_found when no id matches", async () => {
+  const res = await call("regenerate_codes", {
+    ids: ["00000000-0000-0000-0000-000000000000"],
+  });
+  assertEquals(res.status, 404);
+  assertEquals((await res.json()).error, "not_found");
+});

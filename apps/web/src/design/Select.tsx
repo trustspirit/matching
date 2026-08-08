@@ -2,6 +2,12 @@ import { type ReactNode, type SelectHTMLAttributes, useId } from "react";
 
 interface SelectProps extends SelectHTMLAttributes<HTMLSelectElement> {
   label: string;
+  /**
+   * Filter controls sit in a row of their own with no text inputs beside them,
+   * where the form-sized control reads as too heavy. Form fields keep the
+   * default so they line up with TextInput.
+   */
+  compact?: boolean;
   children: ReactNode;
 }
 
@@ -12,7 +18,7 @@ interface SelectProps extends SelectHTMLAttributes<HTMLSelectElement> {
  * design system's colour and sits at an inconsistent inset across browsers.
  */
 export function Select(
-  { label, children, className = "", ...rest }: SelectProps,
+  { label, compact = false, children, className = "", ...rest }: SelectProps,
 ) {
   const id = useId();
   return (
@@ -25,10 +31,12 @@ export function Select(
           {...rest}
           id={id}
           className={[
-            "type-body-md h-11 w-full appearance-none rounded-md bg-canvas",
-            // pr-10 leaves room for the arrow so a long option never runs
-            // underneath it.
-            "border border-ash pl-md pr-10 text-ink",
+            "w-full appearance-none rounded-md bg-canvas border border-ash text-ink",
+            // The right padding leaves room for the arrow so a long option
+            // never runs underneath it.
+            compact
+              ? "type-body-sm h-9 pl-sm pr-8"
+              : "type-body-md h-11 pl-md pr-10",
             className,
           ].join(" ")}
         >
@@ -37,7 +45,10 @@ export function Select(
         <svg
           aria-hidden="true"
           viewBox="0 0 20 20"
-          className="pointer-events-none absolute right-md top-1/2 h-4 w-4 -translate-y-1/2 fill-none stroke-mute"
+          className={[
+            "pointer-events-none absolute top-1/2 -translate-y-1/2 fill-none stroke-mute",
+            compact ? "right-sm h-3 w-3" : "right-md h-4 w-4",
+          ].join(" ")}
           strokeWidth="1.5"
           strokeLinecap="round"
           strokeLinejoin="round"
