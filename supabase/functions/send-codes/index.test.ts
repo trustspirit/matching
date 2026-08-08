@@ -397,3 +397,71 @@ Deno.test("a participant past the attempt ceiling leaves the queue", async () =>
     "t",
   );
 });
+
+Deno.test("a claim held by a dead run is reclaimed after five minutes", async () => {
+  await seed(2);
+  await sql(
+    "update participants set send_claim_id = gen_random_uuid(), send_claimed_at = now();",
+  );
+  await (await call("arm")).body?.cancel();
+
+  // Fresh claims are respected: a run in flight must not be trampled.
+  await withBrevo(
+    () => new Response("{}", { status: 201 }),
+    async () => {
+      assertEquals((await (await call("run")).json()).sent, 0);
+    },
+  );
+
+  await sql("update participants set send_claimed_at = now() - interval '6 minutes';");
+  await withBrevo(
+    () => new Response("{}", { status: 201 }),
+    async () => {
+      assertEquals((await (await call("run")).json()).sent, 2);
+    },
+  );
+});
+
+Deno.test("re-minting a code cancels the send that already claimed it", async () => {
+  await seed(1);
+  await (await call("arm")).body?.cancel();
+
+  // The claim moves while the message is in flight -- exactly what a
+  // concurrent reissue does. Awaiting inside the handler makes this
+  // deterministic: the write lands before the send returns, so the stamp that
+  // follows is guaranteed to find a claim that is no longer ours.
+  await withBrevo(
+    async () => {
+      await sql("update participants set send_claim_id = gen_random_uuid();");
+      return new Response("{}", { status: 201 });
+    },
+    async () => {
+      await (await call("run")).body?.cancel();
+    },
+  );
+
+  // The mail went out but the claim moved, so nothing was stamped. The row is
+  // still pending and the newer request owns it.
+  assertEquals(await sql("select count(*) from participants where code_sent_at is null;"), "1");
+});
+
+Deno.test("two concurrent runs never mail the same person twice", async () => {
+  await seed(6);
+  await (await call("arm")).body?.cancel();
+
+  let calls = 0;
+  await withBrevo(
+    () => {
+      calls++;
+      return new Response("{}", { status: 201 });
+    },
+    async () => {
+      const [a, b] = await Promise.all([call("run"), call("run")]);
+      await a.body?.cancel();
+      await b.body?.cancel();
+    },
+  );
+
+  assertEquals(calls, 6);
+  assertEquals(await sql("select count(*) from participants where code_sent_at is null;"), "0");
+});
