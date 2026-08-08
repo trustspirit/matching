@@ -1,0 +1,61 @@
+name: Deploy Supabase
+
+# Only the server side. The frontend is built and published by Cloudflare Pages
+# on its own, so nothing here touches apps/web.
+#
+# Migrations live under supabase/ too, so this path filter covers both them and
+# the Edge Functions. Rotating a secret changes no file, which is what
+# workflow_dispatch is for.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "supabase/**"
+      - "scripts/deploy.sh"
+      - ".github/workflows/deploy-supabase.yml"
+  workflow_dispatch:
+
+concurrency:
+  # Two deploys racing would interleave `db push` and `functions deploy`.
+  group: deploy-supabase
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # The Supabase CLI comes from devDependencies so CI and a laptop run the
+      # same version. The globally installed CLI on a developer machine could
+      # not even parse this repo's config.toml.
+      - run: pnpm install --frozen-lockfile
+
+      - name: Deploy
+        env:
+          # Authenticates the CLI; without it every command prompts to log in.
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          # Lets `supabase link` run without prompting for the database
+          # password, which is what makes this workflow possible at all.
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
+          PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          SITE_ORIGIN: ${{ secrets.SITE_ORIGIN }}
+          ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+          # Optional. Absent means the code-email feature deploys switched off
+          # rather than failing the run.
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+          BREVO_SENDER_EMAIL: ${{ secrets.BREVO_SENDER_EMAIL }}
+          BREVO_SENDER_NAME: ${{ secrets.BREVO_SENDER_NAME }}
+          EVENT_CONTACT: ${{ secrets.EVENT_CONTACT }}
+        # The same script a developer runs by hand, so there is one definition
+        # of the deploy sequence and its smoke tests rather than two that drift.
+        run: ./scripts/deploy.sh
