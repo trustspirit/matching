@@ -611,10 +611,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // it; only its hash is stored. Nothing new is exposed -- this is the value
     // the server handed out moments ago.
     const result = await sendCodeEmail(data.email, data.display_name, code);
-    if (result === "disabled") {
+    if (result.kind === "disabled") {
       return jsonResponse(req, { error: "email_disabled" }, 400);
     }
-    if (result === "failed") {
+    if (result.kind !== "sent") {
       return jsonResponse(req, { error: "email_failed" }, 502);
     }
 

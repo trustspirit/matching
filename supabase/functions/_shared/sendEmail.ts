@@ -6,7 +6,18 @@
  * address be verified, so no domain is required.
  */
 
-export type SendResult = "sent" | "disabled" | "failed";
+/**
+ * Brevo distinguishes causes that call for opposite responses: 402 means the
+ * daily allowance is gone and retrying today is pointless, while 429 is a
+ * per-second bucket that clears on its own. Collapsing both into "failed" --
+ * as this module used to -- makes a quota wall look like 300 bad addresses.
+ */
+export type SendResult =
+  | { kind: "sent" }
+  | { kind: "disabled" }
+  | { kind: "quota" }
+  | { kind: "throttled"; retryAfterSec: number }
+  | { kind: "failed"; reason: string };
 
 interface BrevoConfig {
   apiKey: string;
@@ -21,6 +32,40 @@ function readConfig(): BrevoConfig | null {
   const senderName = Deno.env.get("BREVO_SENDER_NAME") ?? "";
   if (apiKey === "" || senderEmail === "") return null;
   return { apiKey, senderEmail, senderName: senderName || senderEmail };
+}
+
+const BREVO_URL = "https://api.brevo.com/v3/smtp/email";
+
+/** Overridable so tests can point at a local stub; Brevo otherwise. */
+function apiUrl(): string {
+  return Deno.env.get("BREVO_API_URL") ?? BREVO_URL;
+}
+
+/**
+ * RFC 2606 reserves example.com and the .test/.invalid/.example/.localhost
+ * TLDs precisely so they can never receive mail. One of these reaching the
+ * real Brevo account always means test data met production credentials: it
+ * spends one of the day's 300 messages and returns a bounce, which costs
+ * sender reputation. Against a stub they are the correct addresses to use, so
+ * the guard keys on the endpoint rather than banning them outright.
+ */
+function isUndeliverableByDesign(address: string): boolean {
+  const domain = address.split("@").at(-1)?.toLowerCase() ?? "";
+  return /(^|\.)example\.(com|net|org)$/.test(domain) ||
+    /\.(test|invalid|example|localhost)$/.test(domain);
+}
+
+/**
+ * Brevo reports the wait in seconds via x-sib-ratelimit-reset. A missing or
+ * unparseable header falls back to a minute, which clears any per-second
+ * bucket without the caller having to guess.
+ */
+function retryAfterSeconds(res: Response): number {
+  const parsed = Number.parseInt(
+    res.headers.get("x-sib-ratelimit-reset") ?? "",
+    10,
+  );
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60;
 }
 
 export function emailEnabled(): boolean {
@@ -78,7 +123,12 @@ export async function sendCodeEmail(
   code: string,
 ): Promise<SendResult> {
   const config = readConfig();
-  if (config === null) return "disabled";
+  if (config === null) return { kind: "disabled" };
+  const endpoint = apiUrl();
+  if (endpoint === BREVO_URL && isUndeliverableByDesign(to)) {
+    console.error("refusing to spend quota on a reserved test address", to);
+    return { kind: "failed", reason: "reserved test domain" };
+  }
   const site = siteUrl();
   const contact = eventContact();
 
@@ -104,7 +154,7 @@ export async function sendCodeEmail(
 
   let res: Response;
   try {
-    res = await fetch("https://api.brevo.com/v3/smtp/email", {
+    res = await fetch(endpoint, {
       method: "POST",
       headers: {
         "api-key": config.apiKey,
@@ -115,15 +165,26 @@ export async function sendCodeEmail(
     });
   } catch (caught) {
     console.error("brevo request failed", caught);
-    return "failed";
+    return { kind: "failed", reason: "network" };
   }
 
+  if (res.status === 402) {
+    await res.body?.cancel();
+    return { kind: "quota" };
+  }
+  if (res.status === 429) {
+    const retryAfterSec = retryAfterSeconds(res);
+    await res.body?.cancel();
+    return { kind: "throttled", retryAfterSec };
+  }
   if (!res.ok) {
     // Brevo puts the reason in the body; without it a rejected key and a
-    // rejected recipient look identical in the logs.
-    console.error("brevo rejected the message", res.status, await res.text());
-    return "failed";
+    // rejected recipient look identical. This string is shown to the admin,
+    // so it is truncated rather than logged and discarded.
+    const body = await res.text();
+    console.error("brevo rejected the message", res.status, body);
+    return { kind: "failed", reason: `${res.status} ${body.slice(0, 200)}` };
   }
   await res.body?.cancel();
-  return "sent";
+  return { kind: "sent" };
 }
