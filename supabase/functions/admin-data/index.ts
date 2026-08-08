@@ -51,6 +51,7 @@ interface ParticipantDbRow {
   gender: string;
   contact: string | null;
   email: string | null;
+  code_sent_at: string | null;
 }
 
 /** Only `login` uses this. Every other action authenticates with a token. */
@@ -90,7 +91,7 @@ async function listParticipants(
 ): Promise<AdminParticipantRow[] | null> {
   const { data, error } = await db
     .from("participants")
-    .select("id, display_name, birthdate, gender, contact, email")
+    .select("id, display_name, birthdate, gender, contact, email, code_sent_at")
     .order("display_name")
     .returns<ParticipantDbRow[]>();
   if (error) {
@@ -104,6 +105,7 @@ async function listParticipants(
     gender: r.gender as "M" | "F",
     contact: r.contact,
     email: r.email,
+    codeSentAt: r.code_sent_at,
   }));
 }
 
@@ -233,6 +235,94 @@ function readMatchInput(payload: unknown): MatchInput | null {
   return input;
 }
 
+/** A reason a match cannot be saved, ready to hand back to the operator. */
+interface MatchConflict {
+  error: string;
+  /** Whose problem it is, so the message can name them. */
+  name?: string;
+  /** The match already holding them, for a "이미 여기 있습니다" line. */
+  existing?: { session: string; timeRange: string; venue: string };
+}
+
+/**
+ * Checks a proposed match against the people and the schedule.
+ *
+ * Everything here was previously accepted: the browser only ever sent ids from
+ * the gender-filtered pickers, so nothing invalid arrived in practice. That is
+ * the browser's behaviour, not a rule -- and the one thing the pickers cannot
+ * see is whether the person is already booked.
+ *
+ * `excludeId` is the row being edited. Without it, saving a match unchanged
+ * would report the row as its own conflict.
+ */
+async function findMatchConflict(
+  db: SupabaseClient,
+  input: MatchInput,
+  excludeId: string | null,
+): Promise<MatchConflict | null> {
+  if (input.maleId === input.femaleId) return { error: "same_person" };
+
+  const { data: people, error: peopleError } = await db
+    .from("participants")
+    .select("id, display_name, gender")
+    .in("id", [input.maleId, input.femaleId])
+    .returns<{ id: string; display_name: string; gender: string }[]>();
+  if (peopleError) {
+    console.error("match conflict participant lookup failed", peopleError);
+    return { error: "server_error" };
+  }
+
+  const male = (people ?? []).find((p) => p.id === input.maleId);
+  const female = (people ?? []).find((p) => p.id === input.femaleId);
+  if (male === undefined || female === undefined) return { error: "not_found" };
+  if (male.gender !== "M" || female.gender !== "F") {
+    return { error: "wrong_gender" };
+  }
+
+  // One session is one time block, so a person in two rows of the same session
+  // is being sent to two places at once. This is the check the operator asked
+  // for; the CSV import path has no equivalent and never did.
+  const { data: clashes, error: clashError } = await db
+    .from("matches")
+    .select("id, session, time_range, venue, male_id, female_id")
+    .eq("session", input.session)
+    .or(`male_id.eq.${input.maleId},female_id.eq.${input.femaleId}`)
+    .returns<
+      {
+        id: string;
+        session: string;
+        time_range: string;
+        venue: string;
+        male_id: string;
+        female_id: string;
+      }[]
+    >();
+  if (clashError) {
+    console.error("match conflict lookup failed", clashError);
+    return { error: "server_error" };
+  }
+
+  for (const row of clashes ?? []) {
+    if (row.id === excludeId) continue;
+    const who = row.male_id === input.maleId
+      ? male.display_name
+      : row.female_id === input.femaleId
+      ? female.display_name
+      : null;
+    if (who === null) continue;
+    return {
+      error: "already_scheduled",
+      name: who,
+      existing: {
+        session: row.session,
+        timeRange: row.time_range,
+        venue: row.venue,
+      },
+    };
+  }
+  return null;
+}
+
 Deno.serve(async (req: Request): Promise<Response> => {
   if (req.method === "OPTIONS") return handlePreflight(req);
   if (req.method !== "POST") {
@@ -298,6 +388,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const input = readMatchInput(payload);
     if (input === null) return jsonResponse(req, { error: "invalid_request" }, 400);
 
+    const conflict = await findMatchConflict(db, input, null);
+    if (conflict !== null) {
+      return jsonResponse(req, conflict, conflict.error === "server_error" ? 500 : 409);
+    }
+
     const { data, error } = await db
       .from("matches")
       .insert({
@@ -328,6 +423,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
     const input = readMatchInput(payload);
     if (input === null) return jsonResponse(req, { error: "invalid_request" }, 400);
+
+    // Excludes this row: re-saving a match without changing the people must
+    // not report the row as clashing with itself.
+    const conflict = await findMatchConflict(db, input, id);
+    if (conflict !== null) {
+      return jsonResponse(req, conflict, conflict.error === "server_error" ? 500 : 409);
+    }
 
     const { data, error } = await db
       .from("matches")
@@ -515,7 +617,98 @@ Deno.serve(async (req: Request): Promise<Response> => {
     if (result === "failed") {
       return jsonResponse(req, { error: "email_failed" }, 502);
     }
+
+    // Stamped only after the send succeeds, so a failure leaves the row in the
+    // pending set and the next sweep picks it up again.
+    const { error: stampError } = await db
+      .from("participants")
+      .update({ code_sent_at: new Date().toISOString() })
+      .eq("id", id);
+    if (stampError) {
+      // The mail is already gone; failing the request would tell the operator
+      // to send again. Log it and report success -- the worst case is that this
+      // participant looks unsent and gets a fresh code later.
+      console.error("send_code stamp failed", stampError);
+    }
     return jsonResponse(req, { ok: true, email: data.email });
+  }
+
+  // Issues a fresh code to everyone who has an email address but has never been
+  // sent one, and mails it. Re-sending an existing code is impossible -- only
+  // its hash is stored -- so minting is the only way to put a code in someone's
+  // inbox. That is safe here precisely because the target set is people who
+  // never received the code they currently hold.
+  if (action === "send_pending_codes") {
+    if (!emailEnabled()) {
+      return jsonResponse(req, { error: "email_disabled" }, 400);
+    }
+
+    const { data, error } = await db
+      .from("participants")
+      .select("id, display_name, email, code_salt, code_hash, code_sent_at")
+      .order("display_name")
+      .returns<
+        {
+          id: string;
+          display_name: string;
+          email: string | null;
+          code_salt: string;
+          code_hash: string;
+          code_sent_at: string | null;
+        }[]
+      >();
+    if (error) {
+      console.error("send_pending_codes listing failed", error);
+      return jsonResponse(req, { error: "server_error" }, 500);
+    }
+
+    const all = data ?? [];
+    const targets = all.filter((p) =>
+      p.email !== null && p.email !== "" && p.code_sent_at === null
+    );
+    if (targets.length === 0) return jsonResponse(req, { sent: 0, failed: 0 });
+
+    const targetIds = new Set(targets.map((p) => p.id));
+    const taken: TakenCode[] = all
+      .filter((p) => !targetIds.has(p.id))
+      .map((p) => ({ salt: p.code_salt, hash: p.code_hash }));
+
+    let sent = 0;
+    let failed = 0;
+    for (const p of targets) {
+      const minted = await mintUniqueCode(taken);
+      taken.push({ salt: minted.salt, hash: minted.hash });
+
+      const { error: writeError } = await db
+        .from("participants")
+        .update({ code_salt: minted.salt, code_hash: minted.hash })
+        .eq("id", p.id);
+      if (writeError) {
+        console.error("send_pending_codes write failed", writeError);
+        failed++;
+        continue;
+      }
+
+      const result = await sendCodeEmail(p.email!, p.display_name, minted.code);
+      if (result !== "sent") {
+        // The code changed but the mail did not go out. code_sent_at stays
+        // null, so this participant is still pending and the next run gives
+        // them another code and another attempt.
+        failed++;
+        continue;
+      }
+
+      const { error: stampError } = await db
+        .from("participants")
+        .update({ code_sent_at: new Date().toISOString() })
+        .eq("id", p.id);
+      if (stampError) console.error("send_pending_codes stamp failed", stampError);
+      sent++;
+    }
+
+    // Partial results are reported as they happened. Rolling back on failure
+    // would be a lie: the messages that went out cannot be recalled.
+    return jsonResponse(req, { sent, failed });
   }
 
   if (action === "regenerate_codes") {
@@ -569,7 +762,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
       const { error: writeError } = await db
         .from("participants")
-        .update({ code_salt: minted.salt, code_hash: minted.hash })
+        // code_sent_at goes with the code it described: the participant has
+        // not been sent this new one.
+        .update({
+          code_salt: minted.salt,
+          code_hash: minted.hash,
+          code_sent_at: null,
+        })
         .eq("id", p.id);
       if (writeError) {
         // Stop rather than continue: a partial pass would leave some codes
@@ -603,7 +802,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
     const { data, error } = await db
       .from("participants")
-      .update({ code_salt: salt, code_hash: hash })
+      .update({ code_salt: salt, code_hash: hash, code_sent_at: null })
       .eq("id", id)
       .select("id");
 

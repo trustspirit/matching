@@ -50,7 +50,7 @@ export function Login() {
             aria-hidden="true"
             className="inline-block h-2 w-2 rounded-full bg-primary"
           />
-          데이트 매칭
+          26 KYSA 데이트
         </p>
 
         <h1 className="type-display-lg mt-lg text-ink">매칭 결과 확인하기</h1>

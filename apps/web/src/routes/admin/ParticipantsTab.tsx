@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import type { AdminParticipantRow, ImpactRow } from "@shared/types.ts";
 import { adminData, ApiError } from "../../api/client";
-import { Button } from "../../design/Button";
+import { Button, ROW_BUTTON } from "../../design/Button";
 import { Card } from "../../design/Card";
 import { ConfirmDialog } from "../../design/ConfirmDialog";
+import { SearchInput } from "../../design/SearchInput";
 import { Select } from "../../design/Select";
+import { nameMatches } from "../../lib/nameFilter";
 import { CodeReveal } from "./CodeReveal";
 import { DeleteParticipantDialog } from "./DeleteParticipantDialog";
 
@@ -85,6 +87,22 @@ export function ParticipantsTab({
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [sendError, setSendError] = useState<string | undefined>();
+  const [sendingPending, setSendingPending] = useState(false);
+  const [sendResult, setSendResult] = useState<
+    { sent: number; failed: number } | null
+  >(null);
+  const [nameQuery, setNameQuery] = useState("");
+
+  const visible = participants.filter((p) =>
+    nameMatches(nameQuery, p.displayName)
+  );
+
+  // Has an address to send to, and the code they currently hold has never been
+  // mailed. Anyone without an email is not pending -- there is no way to reach
+  // them, so counting them would only inflate the number.
+  const pending = participants.filter((p) =>
+    p.email !== null && p.email !== "" && p.codeSentAt === null
+  );
 
   useEffect(() => {
     let alive = true;
@@ -121,8 +139,27 @@ export function ParticipantsTab({
     }
   }
 
-  const allSelected = participants.length > 0 &&
-    selected.size === participants.length;
+  async function sendPending(): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const result = await adminData<{ sent: number; failed: number }>(
+        token,
+        "send_pending_codes",
+      );
+      setSendingPending(false);
+      setSendResult(result);
+      onChanged();
+    } catch (caught) {
+      report(caught);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const allSelected = visible.length > 0 &&
+    visible.every((p) => selected.has(p.id));
 
   function toggle(id: string): void {
     setSelected((prev) => {
@@ -344,25 +381,47 @@ export function ParticipantsTab({
             type="checkbox"
             checked={allSelected}
             onChange={(e) =>
+              // Scoped to the rows on screen. Ticking a box while a search is
+              // active and silently selecting people the operator cannot see
+              // would make the reissue count a surprise.
               setSelected(
-                e.target.checked
-                  ? new Set(participants.map((p) => p.id))
-                  : new Set(),
+                e.target.checked ? new Set(visible.map((p) => p.id)) : new Set(),
               )}
           />
           <span>전체 선택</span>
         </label>
 
+        <SearchInput
+          label="이름"
+          value={nameQuery}
+          onValueChange={setNameQuery}
+          placeholder="김철수"
+          className="w-40"
+        />
+
         <p className="type-body-md text-mute">
-          {selected.size === 0
+          {selected.size > 0
+            ? `${selected.size}명 선택 / ${participants.length}명`
+            : visible.length === participants.length
             ? `참가자 ${participants.length}명`
-            : `${selected.size}명 선택 / ${participants.length}명`}
+            : `참가자 ${visible.length} / ${participants.length}명`}
         </p>
 
         <div className="ml-auto flex flex-wrap gap-xs">
+          {emailOn && pending.length > 0 && (
+            <Button
+              type="button"
+              variant="caution"
+              bordered
+              onClick={() => setSendingPending(true)}
+            >
+              미발송 {pending.length}명에게 발송
+            </Button>
+          )}
           <Button
             type="button"
             variant="tertiary"
+            bordered
             disabled={selected.size === 0}
             onClick={() => setConfirming([...selected])}
           >
@@ -371,6 +430,7 @@ export function ParticipantsTab({
           <Button
             type="button"
             variant="tertiary"
+            bordered
             disabled={participants.length === 0}
             onClick={() => setConfirming([])}
           >
@@ -388,6 +448,47 @@ export function ParticipantsTab({
           </Button>
         </div>
       </div>
+
+      {sendingPending && (
+        <ConfirmDialog
+          title={`미발송 ${pending.length}명에게 코드를 보냅니다`}
+          confirmLabel="발송"
+          busy={busy}
+          onConfirm={() => void sendPending()}
+          onCancel={() => setSendingPending(false)}
+          body={
+            <>
+              <p>
+                이메일이 등록되어 있고 아직 코드를 받지 못한{" "}
+                {pending.length}명이 대상입니다. 이미 받은 분께는 가지 않습니다.
+              </p>
+              <p className="mt-md">
+                서버는 코드를 해시로만 보관해 기존 코드를 다시 보낼 수 없습니다.
+                그래서 <strong>각자에게 새 코드가 발급되어</strong> 나갑니다.
+                받은 적이 없는 분들이라 잃는 코드는 없습니다.
+              </p>
+              <p className="mt-md text-mute">
+                메일 서비스의 하루 발송 한도는 300통입니다. 넘는 인원은 실패로
+                남고, 다음 날 이 버튼을 다시 누르면 남은 분들만 잡힙니다.
+              </p>
+            </>
+          }
+        />
+      )}
+
+      {sendResult !== null && (
+        <div className="mt-lg rounded-md border border-hairline bg-surface-card px-lg py-lg">
+          <p className="type-body-sm">
+            {sendResult.sent}명에게 발송했습니다
+            {sendResult.failed > 0 && `, ${sendResult.failed}명 실패`}.
+          </p>
+          {sendResult.failed > 0 && (
+            <p className="type-body-sm mt-xs text-mute">
+              실패한 분들은 미발송으로 남아 있습니다. 다시 누르면 재시도합니다.
+            </p>
+          )}
+        </div>
+      )}
 
       {confirming !== null && (
         <ConfirmDialog
@@ -472,14 +573,17 @@ export function ParticipantsTab({
       {editing === "new" && editor("new")}
 
       <div className="mt-lg flex flex-col">
-        {participants.map((p) =>
+        {visible.map((p) =>
           editing === p.id ? editor(p.id) : (
             // Stacked card on a phone, single table row from md up.
             // `md:contents` dissolves the grouping wrappers at md so their
             // children become columns of one row without duplicated markup.
             <div
               key={p.id}
-              className="type-body-sm flex flex-col gap-xs border-t border-hairline py-md text-body md:flex-row md:flex-wrap md:items-center md:gap-md"
+              // No wrapping from md up: the columns and the action group have
+              // to stay on one line, or the buttons drop to a second row and
+              // stop lining up with the record they act on.
+              className="type-body-sm flex flex-col gap-xs border-t border-hairline py-md text-body md:flex-row md:flex-nowrap md:items-center md:gap-md"
             >
               <div className="flex items-center gap-md md:contents">
                 <input
@@ -495,13 +599,29 @@ export function ParticipantsTab({
                 <span className="md:w-8">{p.gender === "M" ? "남" : "여"}</span>
               </div>
               <div className="flex flex-col gap-xxs md:contents">
-                <span className="md:w-36">{p.contact ?? ""}</span>
-                <span className="truncate md:w-48">{p.email ?? ""}</span>
+                {/* Dropped between md and lg. Everything else in the row is
+                    either identity or the thing codes get sent to, and one
+                    column had to go for the buttons to fit on one line. */}
+                <span className="md:hidden lg:inline lg:w-36">
+                  {p.contact ?? ""}
+                </span>
+                {/* Takes the leftover width so a long address shortens itself
+                    instead of pushing the buttons off the line. */}
+                <span className="flex min-w-0 items-center gap-xs md:flex-1">
+                  <span className="truncate">{p.email ?? ""}</span>
+                  {p.email !== null && p.email !== "" &&
+                    p.codeSentAt === null && (
+                    <span className="type-caption-md shrink-0 rounded-sm bg-secondary-bg px-xs py-xxs text-caution">
+                      미발송
+                    </span>
+                  )}
+                </span>
               </div>
-              <span className="flex flex-wrap gap-xs md:ml-auto">
+              <span className="flex flex-wrap gap-xs md:ml-auto md:flex-nowrap md:gap-0">
                 <Button
                   type="button"
                   variant="tertiary"
+                  className={ROW_BUTTON}
                   onClick={() => {
                     setDraft(toDraft(p));
                     setEditing(p.id);
@@ -511,14 +631,16 @@ export function ParticipantsTab({
                 </Button>
                 <Button
                   type="button"
-                  variant="tertiary"
+                  variant="caution"
+                  className={ROW_BUTTON}
                   onClick={() => void reissue(p)}
                 >
                   코드 재발급
                 </Button>
                 <Button
                   type="button"
-                  variant="tertiary"
+                  variant="danger"
+                  className={ROW_BUTTON}
                   onClick={() => void askDelete(p)}
                 >
                   삭제

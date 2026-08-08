@@ -5,14 +5,18 @@ import type {
   Session,
 } from "@shared/types.ts";
 import { adminData, ApiError } from "../../api/client";
-import { Button } from "../../design/Button";
+import { Button, ROW_BUTTON } from "../../design/Button";
 import { Card } from "../../design/Card";
+import { SearchInput } from "../../design/SearchInput";
 import { Select } from "../../design/Select";
 import { categoryColor, categoryValues } from "../../lib/categoryColor";
+import { nameMatches } from "../../lib/nameFilter";
 import { ParticipantPicker } from "./ParticipantPicker";
 
 const MESSAGES: Record<string, string> = {
   invalid_request: "입력값을 확인해주세요.",
+  same_person: "같은 사람을 남성과 여성 양쪽에 넣을 수 없습니다.",
+  wrong_gender: "남성 칸에는 남성을, 여성 칸에는 여성을 넣어주세요.",
   not_found: "이미 삭제된 항목입니다. 새로고침 후 다시 시도해주세요.",
   unauthorized: "비밀번호가 올바르지 않습니다.",
   too_many_attempts: "시도가 너무 많습니다. 잠시 후 다시 시도해주세요.",
@@ -72,6 +76,7 @@ export function MatchesTab({
   const [error, setError] = useState<string | undefined>();
   const [sessionFilter, setSessionFilter] = useState("전체");
   const [venueFilter, setVenueFilter] = useState("전체");
+  const [nameQuery, setNameQuery] = useState("");
 
   // Derived from every match, never from the filtered subset: a colour has to
   // stay with its venue even when a filter hides the others.
@@ -87,17 +92,35 @@ export function MatchesTab({
     () =>
       matches.filter((m) =>
         (sessionFilter === "전체" || m.session === sessionFilter) &&
-        (venueFilter === "전체" || m.venue === venueFilter)
+        (venueFilter === "전체" || m.venue === venueFilter) &&
+        // Either partner's name counts: the operator looking someone up does
+        // not know which side of the pairing they are on.
+        nameMatches(nameQuery, m.maleName, m.femaleName)
       ),
-    [matches, sessionFilter, venueFilter],
+    [matches, sessionFilter, venueFilter, nameQuery],
   );
 
   function report(caught: unknown): void {
-    if (caught instanceof ApiError) {
-      setError(MESSAGES[caught.code] ?? MESSAGES.server_error);
-    } else {
+    if (!(caught instanceof ApiError)) {
       setError(MESSAGES.network_error);
+      return;
     }
+    // Built here rather than server-side: the server returns the facts, the
+    // screen owns the wording.
+    if (caught.code === "already_scheduled") {
+      const name = caught.info?.name;
+      const at = caught.info?.existing as
+        | { session: string; timeRange: string; venue: string }
+        | undefined;
+      setError(
+        at === undefined
+          ? "이미 같은 부에 배정된 사람이 있습니다."
+          : `${name}님은 이미 ${at.session} ${at.timeRange} ${at.venue}에 배정되어 ` +
+            "있습니다. 같은 부에 두 번 넣을 수 없습니다.",
+      );
+      return;
+    }
+    setError(MESSAGES[caught.code] ?? MESSAGES.server_error);
   }
 
   async function save(): Promise<void> {
@@ -253,6 +276,14 @@ export function MatchesTab({
           {venues.map((v) => <option key={v} value={v}>{v}</option>)}
         </Select>
 
+        <SearchInput
+          label="이름"
+          value={nameQuery}
+          onValueChange={setNameQuery}
+          placeholder="김철수"
+          className="w-40"
+        />
+
         <p className="type-body-md text-mute">
           {visible.length === matches.length
             ? `매칭 ${matches.length}건`
@@ -290,7 +321,10 @@ export function MatchesTab({
         <span className="w-24">여성</span>
       </div>
 
-      <div className="flex flex-col">
+      {/* The header carries the gap from the controls above, but it is hidden
+          below md -- so the rows take that gap over at narrow widths, or the
+          first row's top border lands flush against the filter row. */}
+      <div className="mt-lg flex flex-col md:mt-0">
         {visible.map((row) =>
           editing === row.id ? editor(row.id) : (
             // Stacked card on a phone, single table row from md up. The inner
@@ -299,7 +333,10 @@ export function MatchesTab({
             // as columns of one row instead of duplicating the markup.
             <div
               key={row.id}
-              className="type-body-sm flex flex-col gap-xs border-t border-hairline py-md text-body md:flex-row md:flex-wrap md:items-center md:gap-md"
+              // No wrapping from md up: the columns and the action group have
+              // to stay on one line, or the buttons drop to a second row and
+              // stop lining up with the record they act on.
+              className="type-body-sm flex flex-col gap-xs border-t border-hairline py-md text-body md:flex-row md:flex-nowrap md:items-center md:gap-md"
             >
               <div className="flex items-center gap-md md:contents">
                 <span className="md:w-16">
@@ -334,10 +371,11 @@ export function MatchesTab({
                 <span className="text-mute md:hidden">—</span>
                 <span className="text-ink md:w-24">{row.femaleName}</span>
               </div>
-              <span className="flex gap-xs md:ml-auto">
+              <span className="flex gap-xs md:ml-auto md:shrink-0 md:gap-0">
                 <Button
                   type="button"
                   variant="tertiary"
+                  className={ROW_BUTTON}
                   onClick={() => {
                     setDraft(toDraft(row));
                     setEditing(row.id);
@@ -347,7 +385,8 @@ export function MatchesTab({
                 </Button>
                 <Button
                   type="button"
-                  variant="tertiary"
+                  variant="danger"
+                  className={ROW_BUTTON}
                   onClick={() => void remove(row.id)}
                 >
                   삭제
