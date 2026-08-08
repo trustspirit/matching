@@ -1,8 +1,9 @@
 import { type FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { formatCode, isValidCode, normalizeCode } from "@shared/code.ts";
+import { isValidCode } from "@shared/code.ts";
 import { ApiError, lookup } from "../api/client";
 import { Button } from "../design/Button";
+import { CodeInput } from "../design/CodeInput";
 import { TextInput } from "../design/TextInput";
 import { saveResult } from "../lib/session";
 
@@ -30,7 +31,9 @@ export function Login() {
     setLoading(true);
     setError(undefined);
     try {
-      const result = await lookup(name.trim(), normalizeCode(code));
+      // CodeInput only ever stores allowed characters, so `code` is already
+      // normalized by the time it reaches here.
+      const result = await lookup(name.trim(), code);
       saveResult(result);
       navigate("/result");
     } catch (caught) {
@@ -42,17 +45,17 @@ export function Login() {
   }
 
   return (
-    <main className="flex min-h-full items-center justify-center px-lg py-xxl">
+    <main className="flex min-h-full justify-center px-lg py-xxl">
       <div className="w-full max-w-[480px] rounded-lg bg-canvas p-xxl">
         <p className="type-caption-md flex items-center gap-sm text-mute">
           <span
             aria-hidden="true"
             className="inline-block h-2 w-2 rounded-full bg-primary"
           />
-          랜덤 소개팅
+          데이트 매칭
         </p>
 
-        <h1 className="type-display-lg mt-lg text-ink">내 자리 확인하기</h1>
+        <h1 className="type-display-lg mt-lg text-ink">매칭 결과 확인하기</h1>
         <p className="type-body-md mt-md text-mute">
           이름과 전달받은 코드를 입력해주세요.
         </p>
@@ -66,21 +69,7 @@ export function Login() {
             placeholder="김효준"
             required
           />
-          <TextInput
-            label="코드"
-            value={code}
-            // Reformatting on every keystroke keeps the hyphen in place without
-            // fighting the user's cursor, because the value is fully derived.
-            onChange={(event) => setCode(formatCode(event.target.value))}
-            placeholder="K7M-2QX"
-            inputMode="text"
-            autoCapitalize="characters"
-            autoComplete="off"
-            spellCheck={false}
-            maxLength={7}
-            error={error}
-            required
-          />
+          <CodeInput label="코드" onChange={setCode} error={error} />
           <Button type="submit" fullWidth disabled={!canSubmit} loading={loading}>
             확인하기
           </Button>

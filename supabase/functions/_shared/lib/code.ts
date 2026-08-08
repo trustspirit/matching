@@ -38,10 +38,3 @@ export function isValidCode(input: string): boolean {
   if (code.length !== CODE_LENGTH) return false;
   return [...code].every((ch) => CODE_ALPHABET.includes(ch));
 }
-
-/** Renders a code for display: "K7M2QX" -> "K7M-2QX". */
-export function formatCode(code: string): string {
-  const normalized = normalizeCode(code);
-  if (normalized.length <= 3) return normalized;
-  return `${normalized.slice(0, 3)}-${normalized.slice(3, CODE_LENGTH)}`;
-}
