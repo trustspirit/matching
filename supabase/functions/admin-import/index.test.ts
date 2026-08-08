@@ -60,6 +60,31 @@ function codeFor(codesCsv: string, displayName: string): string {
   return line.split(",").at(-1)!;
 }
 
+/**
+ * Runs SQL through the psql inside the database container. The host has no
+ * psql installed, and the tests need no database client of their own.
+ */
+async function sql(statement: string): Promise<string> {
+  const command = new Deno.Command("docker", {
+    args: [
+      "exec",
+      "supabase_db_blind-date-match",
+      "psql",
+      "-U",
+      "postgres",
+      "-d",
+      "postgres",
+      "-tAc",
+      statement,
+    ],
+    stdout: "piped",
+    stderr: "piped",
+  });
+  const { code, stdout, stderr } = await command.output();
+  if (code !== 0) throw new Error(new TextDecoder().decode(stderr));
+  return new TextDecoder().decode(stdout).trim();
+}
+
 Deno.test("rejects a request with no credentials", async () => {
   const res = await fetch(`${BASE}/admin-import`, { method: "POST" });
   assertEquals(res.status, 401);
@@ -151,6 +176,67 @@ Deno.test("writes nothing when the CSV has errors", async () => {
   // The previously imported match must still be intact.
   const check = await upload(csv(ROW_A));
   assertEquals((await check.json()).participants.created, 0);
+});
+
+Deno.test("re-import resets the send queue, but only clears code_sent_at when the code actually changed", async () => {
+  // A stale ceiling/claim/error from a run that happened before this
+  // correction. A re-upload -- the admin's most natural fix for a typo'd
+  // address -- must reopen the row for claim_pending_codes.
+  await sql(
+    `update participants
+        set send_attempts   = 5,
+            send_last_error = 'old failure',
+            send_claim_id   = gen_random_uuid(),
+            send_claimed_at = now(),
+            code_sent_at    = now()
+      where name = '임포트남';`,
+  );
+
+  // No regenerateCodes: the code is kept, so this participant was already
+  // notified about the code they still have and must not be queued again.
+  const kept = await (await upload(csv(ROW_A))).json();
+  assertEquals(codeFor(kept.codesCsv, "임포트남"), "기존 코드 유지");
+  assertEquals(
+    await sql("select send_attempts from participants where name = '임포트남';"),
+    "0",
+  );
+  assertEquals(
+    await sql(
+      "select send_last_error is null and send_claim_id is null and send_claimed_at is null from participants where name = '임포트남';",
+    ),
+    "t",
+  );
+  assertEquals(
+    await sql("select code_sent_at is not null from participants where name = '임포트남';"),
+    "t",
+  );
+
+  // Put the same stale state back, then force a real code change.
+  await sql(
+    `update participants
+        set send_attempts = 5,
+            send_claim_id = gen_random_uuid()
+      where name = '임포트남';`,
+  );
+  const regenerated = await (await upload(csv(ROW_A), { regenerate: true })).json();
+  const newCode = codeFor(regenerated.codesCsv, "임포트남");
+  assert(newCode !== "기존 코드 유지");
+  latestMaleCode = newCode;
+
+  assertEquals(
+    await sql("select send_attempts from participants where name = '임포트남';"),
+    "0",
+  );
+  assertEquals(
+    await sql("select send_claim_id is null from participants where name = '임포트남';"),
+    "t",
+  );
+  // The code changed, so the old notification no longer describes reality --
+  // code_sent_at must go back to null so the new code actually gets sent.
+  assertEquals(
+    await sql("select code_sent_at is null from participants where name = '임포트남';"),
+    "t",
+  );
 });
 
 Deno.test("merges an aliased name into a single participant", async () => {

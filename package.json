@@ -8,7 +8,7 @@
     "test:watch": "vitest",
     "test:deno:unit": "deno test --allow-env --allow-net --config supabase/functions/deno.json supabase/functions/_shared/hash.test.ts supabase/functions/_shared/rateLimit.test.ts supabase/functions/_shared/mintCode.test.ts supabase/functions/_shared/sendEmail.test.ts",
     "test:deno:lookup": "deno test --allow-env --allow-net supabase/functions/lookup/",
-    "test:deno:admin-import": "ADMIN_PASSWORD=$(grep '^ADMIN_PASSWORD=' supabase/functions/.env | cut -d= -f2-) deno test --allow-env --allow-net supabase/functions/admin-import/",
+    "test:deno:admin-import": "ADMIN_PASSWORD=$(grep '^ADMIN_PASSWORD=' supabase/functions/.env | cut -d= -f2-) deno test --allow-env --allow-net --allow-run supabase/functions/admin-import/",
     "test:deno:send-codes": "ADMIN_PASSWORD=$(grep '^ADMIN_PASSWORD=' supabase/functions/.env | cut -d= -f2-) deno test --allow-env --allow-net --allow-run supabase/functions/send-codes/",
     "test:deno": "pnpm test:deno:unit && pnpm exec supabase db reset && pnpm test:deno:lookup && pnpm exec supabase db reset && pnpm test:deno:admin-import && pnpm exec supabase db reset && pnpm test:deno:send-codes && pnpm exec supabase db reset",
     "dev": "pnpm --filter web dev",

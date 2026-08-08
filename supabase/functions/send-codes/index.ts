@@ -129,17 +129,40 @@ async function recordUrl(db: SupabaseClient): Promise<void> {
 }
 
 interface StatusRow {
+  display_name: string;
   email: string | null;
   code_sent_at: string | null;
   send_attempts: number;
+  send_last_error: string | null;
 }
 
+interface AttentionRow {
+  displayName: string;
+  error: string | null;
+}
+
+/**
+ * How many needing-attention rows to name in the status response.
+ * send_last_error was previously written and never read anywhere -- an admin
+ * facing a rotated API key and a typo'd address saw the identical "확인 필요"
+ * count for both. This is capped so the response stays small even with the
+ * whole ~350-participant list past the ceiling at once; the count above it
+ * (needsAttention) is exact, only the sample is capped.
+ */
+const ATTENTION_SAMPLE_LIMIT = 10;
+
 async function status(db: SupabaseClient): Promise<
-  { enabled: boolean; armed: boolean; pending: number; needsAttention: number } | null
+  {
+    enabled: boolean;
+    armed: boolean;
+    pending: number;
+    needsAttention: number;
+    needsAttentionSample: AttentionRow[];
+  } | null
 > {
   const { data, error } = await db
     .from("participants")
-    .select("email, code_sent_at, send_attempts")
+    .select("display_name, email, code_sent_at, send_attempts, send_last_error")
     .returns<StatusRow[]>();
   if (error) {
     console.error("status listing failed", error);
@@ -147,13 +170,17 @@ async function status(db: SupabaseClient): Promise<
   }
   const rows = data ?? [];
   const reachable = (r: StatusRow) => r.email !== null && r.email !== "";
+  const attention = rows.filter((r) => r.send_attempts >= MAX_ATTEMPTS);
   return {
     enabled: emailEnabled(),
     armed: await isArmed(db),
     pending: rows.filter((r) =>
       reachable(r) && r.code_sent_at === null && r.send_attempts < MAX_ATTEMPTS
     ).length,
-    needsAttention: rows.filter((r) => r.send_attempts >= MAX_ATTEMPTS).length,
+    needsAttention: attention.length,
+    needsAttentionSample: attention
+      .slice(0, ATTENTION_SAMPLE_LIMIT)
+      .map((r) => ({ displayName: r.display_name, error: r.send_last_error })),
   };
 }
 
@@ -168,7 +195,13 @@ async function claim(
   runId: string,
 ): Promise<Claimed[] | null> {
   const { data, error } = await db
-    .rpc("claim_pending_codes", { p_run_id: runId, p_limit: BATCH })
+    .rpc("claim_pending_codes", {
+      p_run_id: runId,
+      p_limit: BATCH,
+      // The single source of truth for the ceiling. See L2 in the whole-branch
+      // review: the RPC used to hardcode its own "5", and the two could drift.
+      p_max_attempts: MAX_ATTEMPTS,
+    })
     .returns<Claimed[]>();
   if (error) {
     console.error("claim failed", error);

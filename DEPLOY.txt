@@ -29,29 +29,44 @@
    넷 중 앞의 둘이 없으면 이메일 기능만 꺼진 채 배포된다.
 
    자동 발송 (선택)
-     참가자가 300명을 넘으면 Brevo 무료 플랜의 하루 300통 한도에 걸립니다.
+     참가자가 300명을 넘으면 Brevo 무료 플랜의 하루 300통 한도에 걸린다.
      관리자 화면에서 "자동 발송"을 켜두면 cron이 5분마다 남은 분들에게
-     이어서 보내고, 전원 발송이 끝나면 스스로 꺼집니다.
+     이어서 보내고, 전원 발송이 끝나면 스스로 꺼진다.
 
-     별도 시크릿은 없습니다. cron이 쓰는 인증 값은 마이그레이션이 만들고,
-     함수 주소는 관리자가 처음 화면을 열 때 기록됩니다.
+     별도 시크릿은 없다. cron이 쓰는 인증 값은 마이그레이션이 만들고,
+     함수 주소(send_codes_url)는 관리자가 처음 화면을 열 때 기록된다.
 
-     배포 후 한 번 확인하세요. 관리자 화면을 연 뒤:
+     scripts/deploy.sh의 스모크 테스트 5/6이 send-codes를 실제로 호출하므로
+     send_codes_url은 그 과정에서 이미 채워진다. 1)의 자동 배포든 손으로
+     deploy.sh를 부르는 경우든 이 스크립트를 거쳤다면 이 항목에서 따로
+     손댈 것이 없다.
+
+     deploy.sh 자체를 건너뛰거나(--dry-run 포함) 스모크 테스트 없이 함수만
+     따로 배포한 경우는 다르다. send_codes_url이 비어 있으면 cron 쿼리의
+     where절이 거짓이 되어 net.http_post가 아예 실행되지 않는데, 실행 자체가
+     없었을 뿐이므로 cron.job_run_details는 계속 성공으로 남는다 — 즉 신호
+     없이 조용히 아무도 받지 못하는 상태가 이어진다. 이런 경로로 배포했다면
+     반드시 확인한다:
 
        select key, value from app_config where key = 'send_codes_url';
 
      값이 https://<project-ref>.supabase.co/functions/v1/send-codes 가
-     아니면 cron이 함수를 찾지 못합니다. 그 경우 직접 고치세요:
+     아니면 cron이 함수를 찾지 못한다. 그 경우 직접 고친다:
 
        update app_config
           set value = 'https://<project-ref>.supabase.co/functions/v1/send-codes'
         where key = 'send_codes_url';
 
-     cron이 실제로 돌았는지는 아래로 봅니다:
+     cron이 실제로 돌았는지는 아래로 본다:
 
        select * from cron.job_run_details
         where jobid = (select jobid from cron.job where jobname = 'send-pending-codes')
         order by start_time desc limit 5;
+
+     참가자가 약 350명이면 하루 300통 한도 때문에 전원 발송이 캘린더로
+     이틀에 걸쳐 나간다 — 첫 300통은 그 자리에서, 나머지는 Brevo 계정의
+     자정(Asia/Seoul) 이후 자동으로 이어진다. 이벤트 일정을 잡을 때 이
+     지연을 반영한다.
 
    손으로 배포할 때 (CI가 막혔거나 급할 때):
 

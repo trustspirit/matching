@@ -50,24 +50,7 @@ Deno.test("status reports the arm flag and the pending count", async () => {
   assertEquals(body.armed, false);
   assert(typeof body.pending === "number");
   assert(typeof body.needsAttention === "number");
-});
-
-Deno.test("arm and disarm round-trip", async () => {
-  const armed = await call("arm");
-  assertEquals((await armed.json()).armed, true);
-
-  const after = await call("status");
-  assertEquals((await after.json()).armed, true);
-
-  const disarmed = await call("disarm");
-  assertEquals((await disarmed.json()).armed, false);
-});
-
-Deno.test("a run does nothing while disarmed", async () => {
-  await (await call("disarm")).body?.cancel();
-  const res = await call("run");
-  assertEquals(res.status, 200);
-  assertEquals((await res.json()).outcome, "disarmed");
+  assert(Array.isArray(body.needsAttentionSample));
 });
 
 /**
@@ -94,6 +77,58 @@ async function sql(statement: string): Promise<string> {
   if (code !== 0) throw new Error(new TextDecoder().decode(stderr));
   return new TextDecoder().decode(stdout).trim();
 }
+
+Deno.test("status names who needs attention, not just how many", async () => {
+  await sql("delete from participants;");
+  await sql(
+    `insert into participants (name, display_name, birthdate, gender, email, code_salt, code_hash, send_attempts, send_last_error)
+     values ('확인남', '확인남', '1990-01-01', 'M', 'a@example.com', 's0', 'h0', 5, '402 quota exceeded');`,
+  );
+  await sql(
+    `insert into participants (name, display_name, birthdate, gender, email, code_salt, code_hash, send_attempts)
+     values ('대기녀', '대기녀', '1990-01-01', 'F', 'b@example.com', 's1', 'h1', 0);`,
+  );
+
+  const body = await (await call("status")).json();
+  assertEquals(body.needsAttention, 1);
+  assertEquals(body.needsAttentionSample.length, 1);
+  assertEquals(body.needsAttentionSample[0].displayName, "확인남");
+  assertEquals(body.needsAttentionSample[0].error, "402 quota exceeded");
+});
+
+Deno.test("the needs-attention sample is capped, not the count behind it", async () => {
+  await sql("delete from participants;");
+  const ATTENTION_SAMPLE_LIMIT = 10;
+  const total = ATTENTION_SAMPLE_LIMIT + 3;
+  for (let i = 0; i < total; i++) {
+    await sql(
+      `insert into participants (name, display_name, birthdate, gender, email, code_salt, code_hash, send_attempts)
+       values ('막힘${i}', '막힘${i}', '1990-01-01', 'M', 'm${i}@example.com', 'sa${i}', 'ha${i}', 5);`,
+    );
+  }
+
+  const body = await (await call("status")).json();
+  assertEquals(body.needsAttention, total);
+  assertEquals(body.needsAttentionSample.length, ATTENTION_SAMPLE_LIMIT);
+});
+
+Deno.test("arm and disarm round-trip", async () => {
+  const armed = await call("arm");
+  assertEquals((await armed.json()).armed, true);
+
+  const after = await call("status");
+  assertEquals((await after.json()).armed, true);
+
+  const disarmed = await call("disarm");
+  assertEquals((await disarmed.json()).armed, false);
+});
+
+Deno.test("a run does nothing while disarmed", async () => {
+  await (await call("disarm")).body?.cancel();
+  const res = await call("run");
+  assertEquals(res.status, 200);
+  assertEquals((await res.json()).outcome, "disarmed");
+});
 
 async function seed(count: number): Promise<void> {
   await sql("delete from participants;");

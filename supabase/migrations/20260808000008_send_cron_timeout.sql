@@ -1,14 +1,18 @@
--- A run that stops on the 120-second budget has to resume quickly: the admin is
--- usually watching. Five minutes is as slow as that may get.
+-- H1 fix: ...0007 registered send-pending-codes without pg_net's
+-- timeout_milliseconds, so net.http_post aborted the request at pg_net's own
+-- DEFAULT of 5000ms while send-codes is designed to run up to TIME_BUDGET_MS
+-- (120s). Worse, pg_net records that abort as a "success" in
+-- net._http_response, so cron.job_run_details -- the table DEPLOY.txt tells
+-- the operator to check -- kept reporting success the whole time. 350 people
+-- would trickle out over hours with no visible cause.
 --
--- Frequency is affordable because the gate lives HERE, in the where clause,
--- not inside the function. When there is nothing to do, net.http_post never
--- executes and no Edge Function is ever started -- the whole tick is one cheap
--- query. Putting the gate in the function instead would wake it 288 times a
--- day to read one row and return.
-create extension if not exists pg_cron;
-create extension if not exists pg_net;
-
+-- ...0007 already ran locally and in production, so correcting that file
+-- alone would not re-register the job: Supabase migrations never re-run once
+-- applied. cron.schedule() re-registers a job in place when called again with
+-- the same jobname, which is what this migration does. ...0007 itself is also
+-- corrected in the same commit so a fresh `db reset` produces the right job
+-- from the start; this migration exists only to carry that fix to a database
+-- where ...0007 already ran.
 select cron.schedule(
   'send-pending-codes',
   '*/5 * * * *',

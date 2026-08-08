@@ -2,11 +2,17 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, sendCodes } from "../../api/client";
 import { Button } from "../../design/Button";
 
+interface AttentionRow {
+  displayName: string;
+  error: string | null;
+}
+
 interface SendStatus {
   enabled: boolean;
   armed: boolean;
   pending: number;
   needsAttention: number;
+  needsAttentionSample: AttentionRow[];
 }
 
 interface RunSummary {
@@ -41,9 +47,16 @@ const MESSAGES: Record<string, string> = {
 interface SendPanelProps {
   token: string;
   onChanged: () => void;
+  /**
+   * Reports whether email is configured every time status is (re)read, so
+   * ParticipantsTab can feed the same value into the per-row 메일 발송
+   * button's canSend instead of hardcoding it -- that button can otherwise
+   * only ever fail against an unconfigured Brevo.
+   */
+  onStatus?: (enabled: boolean) => void;
 }
 
-export function SendPanel({ token, onChanged }: SendPanelProps) {
+export function SendPanel({ token, onChanged, onStatus }: SendPanelProps) {
   const [status, setStatus] = useState<SendStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [summary, setSummary] = useState<RunSummary | null>(null);
@@ -51,12 +64,16 @@ export function SendPanel({ token, onChanged }: SendPanelProps) {
 
   const refresh = useCallback(async () => {
     try {
-      setStatus(await sendCodes<SendStatus>(token, "status"));
+      const result = await sendCodes<SendStatus>(token, "status");
+      setStatus(result);
+      onStatus?.(result.enabled);
     } catch {
-      // A failed status read only hides the panel, which is the safe default.
+      // A failed status read hides the panel, which is the safe default; the
+      // per-row send button follows suit by being told email is unavailable.
       setStatus(null);
+      onStatus?.(false);
     }
-  }, [token]);
+  }, [token, onStatus]);
 
   useEffect(() => {
     void refresh();
@@ -100,7 +117,40 @@ export function SendPanel({ token, onChanged }: SendPanelProps) {
     }
   }
 
-  if (status === null || !status.enabled) return null;
+  if (status === null) return null;
+
+  // Email is off. If it is also disarmed there is nothing this panel can do
+  // -- hide it, same as before. But while it is still armed, cron keeps
+  // POSTing every five minutes forever with nowhere to send: the only control
+  // that can stop that (자동 발송 끄기) must not disappear along with the rest
+  // of the panel, or a lost/rotated BREVO_API_KEY mid-campaign becomes
+  // unrecoverable from the UI.
+  if (!status.enabled) {
+    if (!status.armed) return null;
+    return (
+      <div className="mt-lg rounded-md border border-caution bg-surface-card px-lg py-lg">
+        <p className="type-body-sm">
+          이메일 발송이 설정되어 있지 않은데 자동 발송은 켜진 상태입니다. cron이
+          5분마다 계속 호출되지만 이메일 기능이 꺼져 있어 아무에게도 보내지
+          못합니다. 먼저 자동 발송을 꺼주세요.
+        </p>
+        <div className="mt-md">
+          <Button
+            type="button"
+            variant="tertiary"
+            bordered
+            loading={busy}
+            onClick={() => void toggle()}
+          >
+            자동 발송 끄기
+          </Button>
+        </div>
+        {error !== undefined && (
+          <p role="alert" className="type-body-sm mt-xs text-error">{error}</p>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="mt-lg rounded-md border border-hairline bg-surface-card px-lg py-lg">
@@ -115,7 +165,7 @@ export function SendPanel({ token, onChanged }: SendPanelProps) {
             type="button"
             variant={status.armed ? "tertiary" : "caution"}
             bordered
-            disabled={busy}
+            loading={busy}
             onClick={() => void toggle()}
           >
             {status.armed ? "자동 발송 끄기" : "자동 발송 켜기"}
@@ -124,7 +174,8 @@ export function SendPanel({ token, onChanged }: SendPanelProps) {
             type="button"
             variant="tertiary"
             bordered
-            disabled={busy || !status.armed || status.pending === 0}
+            disabled={!status.armed || status.pending === 0}
+            loading={busy}
             onClick={() => void runNow()}
           >
             지금 실행
@@ -152,6 +203,17 @@ export function SendPanel({ token, onChanged }: SendPanelProps) {
           {status.needsAttention}명은 발송이 반복 실패해 대기열에서 빠졌습니다.
           이메일 주소를 확인하고 저장하거나 코드를 재발급하면 다시 대상이 됩니다.
         </p>
+      )}
+
+      {status.needsAttentionSample.length > 0 && (
+        <ul className="type-body-sm mt-xs list-disc pl-lg text-mute">
+          {status.needsAttentionSample.map((row, i) => (
+            <li key={`${row.displayName}-${i}`}>
+              {row.displayName}
+              {row.error !== null && ` — ${row.error}`}
+            </li>
+          ))}
+        </ul>
       )}
 
       {error !== undefined && (

@@ -88,6 +88,11 @@ export function ParticipantsTab({
   const [sent, setSent] = useState(false);
   const [sendError, setSendError] = useState<string | undefined>();
   const [nameQuery, setNameQuery] = useState("");
+  // SendPanel already asks send-codes whether Brevo is configured; lifted here
+  // so the per-row 메일 발송 button can be honest instead of always assuming
+  // it will work. Defaults to false so the button stays hidden until the
+  // first status read lands, same fail-closed default SendPanel itself uses.
+  const [emailEnabled, setEmailEnabled] = useState(false);
 
   const visible = participants.filter((p) =>
     nameMatches(nameQuery, p.displayName)
@@ -395,7 +400,7 @@ export function ParticipantsTab({
         </div>
       </div>
 
-      <SendPanel token={token} onChanged={onChanged} />
+      <SendPanel token={token} onChanged={onChanged} onStatus={setEmailEnabled} />
 
       {confirming !== null && (
         <ConfirmDialog
@@ -457,7 +462,7 @@ export function ParticipantsTab({
           name={revealed.name}
           code={revealed.code}
           email={revealed.email}
-          canSend
+          canSend={emailEnabled}
           sending={sending}
           sent={sent}
           sendError={sendError}
