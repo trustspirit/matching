@@ -75,6 +75,12 @@ export interface AdminParticipantRow {
   gender: "M" | "F";
   contact: string | null;
   email: string | null;
+  /**
+   * When this participant was emailed the code they currently hold, or null if
+   * they never were. Minting a code clears it, so a null here always means the
+   * live code has not gone out.
+   */
+  codeSentAt: string | null;
 }
 
 /** What deleting a participant would take with it. */

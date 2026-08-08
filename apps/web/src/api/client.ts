@@ -14,6 +14,11 @@ export class ApiError extends Error {
     readonly code: string,
     readonly retryAfter?: number,
     readonly details?: string[],
+    /**
+     * The rest of the error body, for codes that carry context the message has
+     * to name -- a match conflict says who is already booked and where.
+     */
+    readonly info?: Record<string, unknown>,
   ) {
     super(code);
     this.name = "ApiError";
@@ -29,15 +34,17 @@ async function readError(res: Response): Promise<never> {
   let code = "server_error";
   let retryAfter: number | undefined;
   let details: string[] | undefined;
+  let info: Record<string, unknown> | undefined;
   try {
     const body = await res.json();
     if (typeof body.error === "string") code = body.error;
     if (typeof body.retryAfter === "number") retryAfter = body.retryAfter;
     if (Array.isArray(body.errors)) details = body.errors;
+    if (body !== null && typeof body === "object") info = body;
   } catch {
     // Body was not JSON; the default code already covers it.
   }
-  throw new ApiError(code, retryAfter, details);
+  throw new ApiError(code, retryAfter, details, info);
 }
 
 export async function lookup(code: string): Promise<LookupResponse> {
