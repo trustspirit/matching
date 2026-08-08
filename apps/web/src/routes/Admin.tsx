@@ -143,7 +143,15 @@ export function Admin() {
       <h1 className="type-heading-xl text-ink">매칭 데이터 관리</h1>
 
       <div className="mt-xl flex flex-wrap items-center gap-xs">
-        <div role="tablist" className="flex flex-wrap gap-xs">
+        {/* A segmented control: one track holding a single highlight that moves
+            between the tabs. Each tab used to carry its own filled pill, which
+            at this gap read as one continuous shape rather than a choice
+            between three. Only the selected tab has a fill now, so what moves
+            is the highlight. */}
+        <div
+          role="tablist"
+          className="inline-flex rounded-lg bg-secondary-bg p-xxs"
+        >
           {TABS.map(({ key, label }) => (
             <button
               key={key}
@@ -152,10 +160,12 @@ export function Admin() {
               aria-selected={tab === key}
               onClick={() => setTab(key)}
               className={[
-                "type-body-strong rounded-md px-lg py-md",
+                "type-body-strong rounded-lg px-lg py-sm transition-colors",
                 tab === key
                   ? "bg-surface-dark text-on-primary"
-                  : "bg-secondary-bg text-ink",
+                  // Muted rather than full ink: an unselected tab that is as
+                  // dark as the selected label makes the highlight ambiguous.
+                  : "text-mute",
               ].join(" ")}
             >
               {label}
