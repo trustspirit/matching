@@ -188,3 +188,123 @@ export async function sendCodeEmail(
   await res.body?.cancel();
   return { kind: "sent" };
 }
+
+const BREVO_ACCOUNT_URL = "https://api.brevo.com/v3/account";
+
+function accountUrl(): string {
+  return Deno.env.get("BREVO_ACCOUNT_URL") ?? BREVO_ACCOUNT_URL;
+}
+
+export interface QuotaInfo {
+  /** Messages left in today's allowance. */
+  credits: number;
+  /**
+   * IANA zone whose midnight resets that allowance. Brevo counts the day on
+   * the account's own clock, not UTC and not ours, and reports it here -- so
+   * the reset time is knowable rather than something to probe for.
+   */
+  timezone: string;
+}
+
+/**
+ * Asks Brevo how many messages today still allows.
+ *
+ * Without this the only way to discover the daily wall is to send and take a
+ * 402, which costs a freshly minted code that then has to be thrown away. The
+ * free plan reports the remaining count as a `sendLimit` credit line.
+ *
+ * Returns null when the account cannot be read; the caller must then fall back
+ * to sending and treating 402 as the signal.
+ */
+export async function fetchQuota(): Promise<QuotaInfo | null> {
+  const config = readConfig();
+  if (config === null) return null;
+
+  let res: Response;
+  try {
+    res = await fetch(accountUrl(), {
+      headers: { "api-key": config.apiKey, accept: "application/json" },
+    });
+  } catch (caught) {
+    console.error("brevo account request failed", caught);
+    return null;
+  }
+  if (!res.ok) {
+    console.error("brevo account rejected", res.status, await res.text());
+    return null;
+  }
+
+  let body: {
+    plan?: { creditsType?: string; credits?: number }[];
+    dateTimePreferences?: { timezone?: string };
+  };
+  try {
+    body = await res.json();
+  } catch (caught) {
+    console.error("brevo account body was not json", caught);
+    return null;
+  }
+
+  const line = (body.plan ?? []).find((p) => p.creditsType === "sendLimit");
+  if (line === undefined || typeof line.credits !== "number") return null;
+
+  return {
+    credits: line.credits,
+    // UTC is the safe fallback: guessing a local zone could schedule the retry
+    // before the reset, and a too-early retry only costs one wasted probe.
+    timezone: body.dateTimePreferences?.timezone ?? "UTC",
+  };
+}
+
+/** Milliseconds to ADD to a UTC instant to read wall-clock time in `zone`. */
+function zoneOffsetMs(zone: string, at: Date): number {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: zone,
+      hour12: false,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    })
+      .formatToParts(at)
+      .filter((p) => p.type !== "literal")
+      .map((p) => [p.type, Number(p.value)]),
+  );
+  const asUtc = Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    // Intl can render midnight as hour 24 in some locales/zones.
+    parts.hour === 24 ? 0 : parts.hour,
+    parts.minute,
+    parts.second,
+  );
+  return asUtc - at.getTime();
+}
+
+/**
+ * The next midnight in `zone`, plus five minutes of slack so a clock skew
+ * cannot land the retry a moment before the counter actually rolls over.
+ *
+ * An unknown zone name would make Intl throw and take the whole run with it,
+ * so the failure falls back to 24 hours rather than propagating.
+ */
+export function nextResetAt(zone: string, now: Date): Date {
+  const MARGIN_MS = 5 * 60_000;
+  try {
+    const offset = zoneOffsetMs(zone, now);
+    const local = new Date(now.getTime() + offset);
+    const nextLocalMidnight = Date.UTC(
+      local.getUTCFullYear(),
+      local.getUTCMonth(),
+      local.getUTCDate() + 1,
+    );
+    return new Date(nextLocalMidnight - offset + MARGIN_MS);
+  } catch (caught) {
+    console.error("unusable timezone from brevo", zone, caught);
+    return new Date(now.getTime() + 24 * 3600_000);
+  }
+}

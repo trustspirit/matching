@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { sendCodeEmail } from "./sendEmail.ts";
+import { fetchQuota, nextResetAt, sendCodeEmail } from "./sendEmail.ts";
 
 /**
  * Brevo is replaced by a local server. The env override exists only for this:
@@ -108,4 +108,70 @@ Deno.test("the real endpoint refuses an address reserved for testing", async () 
     const result = await sendCodeEmail(address, "가", "ABC123");
     assertEquals(result.kind, "failed", address);
   }
+});
+
+Deno.test("fetchQuota reads the sendLimit line and the account timezone", async () => {
+  await withStub(
+    () =>
+      new Response(
+        JSON.stringify({
+          plan: [
+            { type: "free", credits: 42, creditsType: "sendLimit" },
+            { type: "free", credits: 9, creditsType: "somethingElse" },
+          ],
+          dateTimePreferences: { timezone: "Asia/Seoul" },
+        }),
+        { status: 200 },
+      ),
+    async () => {
+      Deno.env.set("BREVO_ACCOUNT_URL", Deno.env.get("BREVO_API_URL")!);
+      assertEquals(await fetchQuota(), { credits: 42, timezone: "Asia/Seoul" });
+    },
+  );
+});
+
+Deno.test("fetchQuota falls back to UTC when the account omits a timezone", async () => {
+  await withStub(
+    () =>
+      new Response(
+        JSON.stringify({ plan: [{ credits: 0, creditsType: "sendLimit" }] }),
+        { status: 200 },
+      ),
+    async () => {
+      Deno.env.set("BREVO_ACCOUNT_URL", Deno.env.get("BREVO_API_URL")!);
+      assertEquals(await fetchQuota(), { credits: 0, timezone: "UTC" });
+    },
+  );
+});
+
+Deno.test("fetchQuota returns null rather than guessing when the account is unreadable", async () => {
+  await withStub(
+    () => new Response("nope", { status: 500 }),
+    async () => {
+      Deno.env.set("BREVO_ACCOUNT_URL", Deno.env.get("BREVO_API_URL")!);
+      assertEquals(await fetchQuota(), null);
+    },
+  );
+});
+
+Deno.test("nextResetAt targets the next midnight in the account's zone", () => {
+  // 2026-08-09T10:00:00Z is 19:00 the same day in Seoul (UTC+9), so the next
+  // Seoul midnight is 2026-08-10T00:00 KST == 2026-08-09T15:00Z, plus 5 min.
+  const at = nextResetAt("Asia/Seoul", new Date("2026-08-09T10:00:00Z"));
+  assertEquals(at.toISOString(), "2026-08-09T15:05:00.000Z");
+});
+
+Deno.test("nextResetAt handles an instant already past the local midnight", () => {
+  // 2026-08-09T16:00:00Z is 01:00 on the 10th in Seoul, so the next midnight
+  // is the 11th at 00:00 KST == 2026-08-10T15:00Z.
+  const at = nextResetAt("Asia/Seoul", new Date("2026-08-09T16:00:00Z"));
+  assertEquals(at.toISOString(), "2026-08-10T15:05:00.000Z");
+});
+
+Deno.test("nextResetAt falls back to a day rather than throwing on a bad zone", () => {
+  const now = new Date("2026-08-09T10:00:00Z");
+  assertEquals(
+    nextResetAt("Not/AZone", now).toISOString(),
+    "2026-08-10T10:00:00.000Z",
+  );
 });

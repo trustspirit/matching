@@ -3,7 +3,7 @@ import { handlePreflight, jsonResponse } from "../_shared/cors.ts";
 import { createServiceClient } from "../_shared/db.ts";
 import { timingSafeEqual } from "../_shared/hash.ts";
 import { mintUniqueCode, type TakenCode } from "../_shared/mintCode.ts";
-import { emailEnabled, sendCodeEmail } from "../_shared/sendEmail.ts";
+import { emailEnabled, fetchQuota, nextResetAt, sendCodeEmail } from "../_shared/sendEmail.ts";
 import { bearerToken, verifySession } from "../_shared/session.ts";
 
 /** A row past this many consecutive failures leaves the queue. */
@@ -81,12 +81,15 @@ async function setArmed(db: SupabaseClient, armed: boolean): Promise<boolean> {
 }
 
 /**
- * How long to stop probing after Brevo says the daily allowance is gone.
- * Brevo does not document its reset hour, so the schedule has to rediscover it
- * -- but re-probing every five minutes for the rest of the day would burn a
- * full participants scan and a wasted API call each time.
+ * How long to stop probing after a 402 -- the safety net for when the quota
+ * probe (fetchQuota) could not be trusted: a race between the probe and the
+ * send, or the probe itself failing to read the account. This is unexpected,
+ * so unlike the credits===0 path it does NOT aim at midnight: if the midnight
+ * math were ever wrong, a once-a-day probe interval would match the reset
+ * interval and stay permanently out of phase, losing a full day each time. An
+ * hour always re-syncs within half a day.
  */
-const QUOTA_BACKOFF_MS = 30 * 60_000;
+const QUOTA_BACKOFF_MS = 60 * 60_000;
 
 /**
  * Written on a 402 and cleared when the queue drains. The cron job reads this
@@ -239,6 +242,36 @@ async function stamp(
     .eq("send_claim_id", runId);
 }
 
+/**
+ * Read-modify-write rather than a SQL increment: PostgREST has no atomic
+ * increment, and the claim this run still holds means nobody else is touching
+ * the row.
+ */
+async function recordFailure(
+  db: SupabaseClient,
+  runId: string,
+  id: string,
+  reason: string,
+): Promise<void> {
+  const { data } = await db
+    .from("participants")
+    .select("send_attempts")
+    .eq("id", id)
+    .maybeSingle<{ send_attempts: number }>();
+
+  const { error } = await db
+    .from("participants")
+    .update({
+      send_attempts: (data?.send_attempts ?? 0) + 1,
+      send_last_error: reason.slice(0, 500),
+      send_claim_id: null,
+      send_claimed_at: null,
+    })
+    .eq("id", id)
+    .eq("send_claim_id", runId);
+  if (error) console.error("failure record failed", error);
+}
+
 type OneResult = "sent" | "failed" | "cancelled" | "quota" | "time";
 
 async function sendOne(
@@ -246,6 +279,7 @@ async function sendOne(
   runId: string,
   person: Claimed,
   taken: TakenCode[],
+  deadline: number,
 ): Promise<OneResult> {
   const minted = await mintUniqueCode(taken);
   taken.push({ salt: minted.salt, hash: minted.hash });
@@ -269,13 +303,34 @@ async function sendOne(
   }
   if ((written ?? []).length === 0) return "cancelled";
 
-  const result = await sendCodeEmail(person.email, person.display_name, minted.code);
-  if (result.kind === "sent") {
-    await stamp(db, runId, person.id);
-    return "sent";
+  let result = await sendCodeEmail(person.email, person.display_name, minted.code);
+
+  if (result.kind === "throttled") {
+    const waitMs = result.retryAfterSec * 1000;
+    // Sleeping past the budget accomplishes nothing: the run would wake with no
+    // time left to send. Stop now and let the next cron slot pick this up.
+    if (Date.now() + waitMs >= deadline) return "time";
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    result = await sendCodeEmail(person.email, person.display_name, minted.code);
+    // Brevo sets the delay, so a second throttle could ask for anything. One
+    // retry is the cap; the queue is durable and cron comes back.
+    if (result.kind === "throttled") return "time";
   }
-  // The remaining kinds arrive in the next task.
-  return "failed";
+
+  // The daily allowance is gone. This is not the participant's failure, so
+  // their attempt counter must not move.
+  if (result.kind === "quota") return "quota";
+
+  // emailEnabled() gates the whole run, so this is unreachable in practice.
+  if (result.kind === "disabled") return "time";
+
+  if (result.kind === "failed") {
+    await recordFailure(db, runId, person.id, result.reason);
+    return "failed";
+  }
+
+  await stamp(db, runId, person.id);
+  return "sent";
 }
 
 async function run(db: SupabaseClient): Promise<RunSummary | null> {
@@ -284,8 +339,30 @@ async function run(db: SupabaseClient): Promise<RunSummary | null> {
   const taken = await loadTakenCodes(db);
   if (taken === null) return null;
 
+  // Ask before spending. Discovering the wall by taking a 402 costs a freshly
+  // minted code that then has to be discarded, and it happens once per probe
+  // for as long as the allowance stays empty.
+  const quota = await fetchQuota();
+  if (quota !== null && quota.credits <= 0) {
+    // The reset hour is the account's own midnight, which the same response
+    // just told us -- so this is a precise appointment, not a poll interval.
+    await setRetryAfter(db, nextResetAt(quota.timezone, new Date()));
+    return { outcome: "quota", sent: 0, failed: 0 };
+  }
+  // A null quota means the account could not be read. Fall through and let 402
+  // be the signal; refusing to send because a status call failed would be worse.
+
   let sent = 0;
   let failed = 0;
+  // recordFailure clears the claim so the NEXT run can pick a failure back up
+  // -- but that also makes it instantly eligible to claim() again, and this
+  // run's own outer loop keeps claiming until the queue is empty. Without this
+  // guard a single permanently-bad address would be retried in a tight loop
+  // until it either succeeds by chance or burns through MAX_ATTEMPTS in the
+  // same couple of minutes, instead of one attempt per run. A row skipped here
+  // stays claimed by this run (claim() already stamped it) until the finally
+  // block releases it, so it is not reclaimed again until the next run.
+  const failedThisRun = new Set<string>();
 
   try {
     for (;;) {
@@ -305,12 +382,28 @@ async function run(db: SupabaseClient): Promise<RunSummary | null> {
       }
 
       for (const person of batch) {
+        if (failedThisRun.has(person.id)) continue;
         if (Date.now() >= deadline) {
+          await release(db, runId);
           return { outcome: "time", sent, failed };
         }
-        const result = await sendOne(db, runId, person, taken);
-        if (result === "sent") sent++;
-        else if (result === "failed") failed++;
+        const result = await sendOne(db, runId, person, taken, deadline);
+        if (result === "sent") {
+          sent++;
+        } else if (result === "failed") {
+          failed++;
+          failedThisRun.add(person.id);
+        } else if (result === "quota") {
+          await release(db, runId);
+          // Stay armed -- the job is not finished, it is waiting for tomorrow.
+          // Only an empty queue disarms. The backoff is what keeps the schedule
+          // from re-probing every five minutes until Brevo's counter resets.
+          await setRetryAfter(db, new Date(Date.now() + QUOTA_BACKOFF_MS));
+          return { outcome: "quota", sent, failed };
+        } else if (result === "time") {
+          await release(db, runId);
+          return { outcome: "time", sent, failed };
+        }
         // "cancelled" is neither: nothing was sent and nothing went wrong.
       }
     }
