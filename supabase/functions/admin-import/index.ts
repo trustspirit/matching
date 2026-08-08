@@ -1,5 +1,13 @@
 import { handlePreflight, jsonResponse } from "../_shared/cors.ts";
 import { createServiceClient } from "../_shared/db.ts";
+import {
+  ADMIN_POLICY,
+  clientIp,
+  getIpSalt,
+  hashIp,
+  isRateLimited,
+  recordAttempt,
+} from "../_shared/rateLimit.ts";
 import { hashCode, randomSalt, timingSafeEqual } from "../_shared/hash.ts";
 import { generateCode } from "../_shared/lib/code.ts";
 import { buildCodesCsv, parseMatchCsv } from "../_shared/lib/csv.ts";
@@ -23,7 +31,26 @@ Deno.serve(async (req: Request): Promise<Response> => {
   if (req.method !== "POST") {
     return jsonResponse(req, { error: "invalid_request" }, 405);
   }
+  const db = createServiceClient();
+
+  const salt = await getIpSalt(db);
+  const ipHash = salt === null ? null : await hashIp(clientIp(req), salt);
+
+  if (ipHash !== null && await isRateLimited(db, ipHash, ADMIN_POLICY)) {
+    return jsonResponse(
+      req,
+      { error: "too_many_attempts", retryAfter: 900 },
+      429,
+    );
+  }
+
+  // Rate limiting keys on authentication failure, not on request shape.
+  // Counting only verifyOnly requests would let an attacker bypass the limit
+  // by attaching a dummy file to every guess.
   if (!isAuthorized(req)) {
+    if (ipHash !== null) {
+      await recordAttempt(db, ipHash, false, ADMIN_POLICY);
+    }
     return jsonResponse(req, { error: "unauthorized" }, 401);
   }
 
@@ -32,6 +59,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
     form = await req.formData();
   } catch {
     return jsonResponse(req, { error: "invalid_request" }, 400);
+  }
+
+  // Gate check from the /admin entry screen: authentication already passed, so
+  // answer without touching the CSV path or the database.
+  if (form.get("verifyOnly") === "true") {
+    return jsonResponse(req, { ok: true });
   }
 
   const file = form.get("file");
@@ -53,8 +86,6 @@ Deno.serve(async (req: Request): Promise<Response> => {
     people.set(personKey(match.male), match.male);
     people.set(personKey(match.female), match.female);
   }
-
-  const db = createServiceClient();
 
   const { data: existingRows, error: existingError } = await db
     .from("participants")
