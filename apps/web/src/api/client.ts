@@ -59,27 +59,44 @@ export async function lookup(name: string, code: string): Promise<LookupResponse
 }
 
 /**
- * Checks the admin password without uploading anything. Used by the /admin
- * entry screen so a typo surfaces before the operator picks a CSV file. This
- * is not a session: the password is sent again with the actual upload.
+ * Exchanges the admin password for a session token. This is the only request
+ * that ever carries the password.
  */
-export async function adminVerify(password: string): Promise<void> {
-  const form = new FormData();
-  form.append("verifyOnly", "true");
-
+export async function adminLogin(password: string): Promise<string> {
   // Resolved outside the try: same reasoning as lookup() above.
-  const url = endpoint("/admin-import");
+  const url = endpoint("/admin-data");
   let res: Response;
   try {
     res = await fetch(url, {
       method: "POST",
-      headers: { Authorization: `Bearer ${password}` },
-      body: form,
+      headers: {
+        Authorization: `Bearer ${password}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ action: "login" }),
     });
   } catch {
     throw new ApiError("network_error");
   }
   if (!res.ok) await readError(res);
+  return (await res.json() as { token: string }).token;
+}
+
+export async function adminLogout(token: string): Promise<void> {
+  const url = endpoint("/admin-data");
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ action: "logout" }),
+    });
+  } catch {
+    // The local token is cleared regardless; a failed revoke only means the
+    // row lingers until it expires.
+  }
 }
 
 /**
