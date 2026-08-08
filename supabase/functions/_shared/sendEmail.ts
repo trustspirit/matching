@@ -28,6 +28,44 @@ export function emailEnabled(): boolean {
 }
 
 /**
+ * Where to send the participant. Reuses ALLOWED_ORIGIN rather than adding
+ * another secret: its first entry is already the deployed site, since that is
+ * what the CORS allow-list is built from. Returns null when it is unset, and
+ * the mail simply omits the link.
+ */
+function siteUrl(): string | null {
+  const first = (Deno.env.get("ALLOWED_ORIGIN") ?? "").split(",")[0]?.trim();
+  if (first === undefined || first === "") return null;
+  // A localhost entry is a development artefact; linking a participant there
+  // would be worse than linking nothing.
+  if (first.startsWith("http://localhost") || first.startsWith("http://127.")) {
+    return null;
+  }
+  return first;
+}
+
+/**
+ * Free text naming who to ask for help, shown at the bottom of the mail.
+ *
+ * This is what lets the sender be a noreply address: replies would otherwise
+ * vanish, and out of a few hundred participants some always reply. Unset means
+ * the line is omitted rather than printing an empty prompt.
+ */
+function eventContact(): string | null {
+  const value = (Deno.env.get("EVENT_CONTACT") ?? "").trim();
+  return value === "" ? null : value;
+}
+
+/** Keeps operator-supplied text from breaking the surrounding markup. */
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+/**
  * Sends one participant their code.
  *
  * The subject deliberately omits the code: it would otherwise show up in lock
@@ -41,17 +79,26 @@ export async function sendCodeEmail(
 ): Promise<SendResult> {
   const config = readConfig();
   if (config === null) return "disabled";
+  const site = siteUrl();
+  const contact = eventContact();
 
   const body = {
     sender: { email: config.senderEmail, name: config.senderName },
     to: [{ email: to, name: displayName }],
     subject: "매칭 결과 확인 코드 안내",
     htmlContent: [
-      `<p>${displayName}님, 안녕하세요.</p>`,
+      `<p>${escapeHtml(displayName)}님, 안녕하세요.</p>`,
       "<p>매칭 결과를 확인하실 코드입니다.</p>",
       `<p style="font-size:24px;font-weight:bold;letter-spacing:2px">${code}</p>`,
-      "<p>사이트에서 이 코드를 입력하시면 상대방과 시간, 장소를 보실 수 있습니다.</p>",
+      site === null
+        ? "<p>안내받으신 사이트에서 이 코드를 입력하시면 상대방과 시간, 장소를 보실 수 있습니다.</p>"
+        : `<p>아래 주소에서 코드를 입력하시면 상대방과 시간, 장소를 보실 수 있습니다.</p><p><a href="${site}">${site}</a></p>`,
       "<p>이 코드는 본인 확인에 쓰이니 다른 분과 공유하지 말아주세요.</p>",
+      ...(contact === null ? [] : [
+        // The sender is a noreply address, so the mail has to say where a
+        // question actually goes.
+        `<p style="color:#62625b">이 메일은 회신을 받지 않습니다. 문의는 ${escapeHtml(contact)} 로 연락해주세요.</p>`,
+      ]),
     ].join(""),
   };
 

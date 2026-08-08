@@ -53,7 +53,8 @@ if [[ -n "${BREVO_API_KEY:-}" ]]; then
   run pnpm exec supabase secrets set \
     "BREVO_API_KEY=${BREVO_API_KEY}" \
     "BREVO_SENDER_EMAIL=${BREVO_SENDER_EMAIL:-}" \
-    "BREVO_SENDER_NAME=${BREVO_SENDER_NAME:-}"
+    "BREVO_SENDER_NAME=${BREVO_SENDER_NAME:-}" \
+    "EVENT_CONTACT=${EVENT_CONTACT:-}"
 else
   echo "==> mail secrets skipped (set BREVO_API_KEY to enable code emails)"
 fi
