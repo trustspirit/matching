@@ -158,3 +158,30 @@ export async function adminImport(
   if (!res.ok) return await readError(res);
   return await res.json() as ImportResponse;
 }
+
+/**
+ * Calls the batch sending API. Separate from adminData because it is a
+ * different function; the session token is the same one.
+ */
+export async function sendCodes<T>(
+  token: string,
+  action: string,
+): Promise<T> {
+  // Resolved outside the try: same reasoning as lookup() above.
+  const url = endpoint("/send-codes");
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ action }),
+    });
+  } catch {
+    throw new ApiError("network_error");
+  }
+  if (!res.ok) await readError(res);
+  return await res.json() as T;
+}

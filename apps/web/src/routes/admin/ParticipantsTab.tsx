@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { AdminParticipantRow, ImpactRow } from "@shared/types.ts";
 import { adminData, ApiError } from "../../api/client";
 import { Button, ROW_BUTTON } from "../../design/Button";
@@ -9,6 +9,7 @@ import { Select } from "../../design/Select";
 import { nameMatches } from "../../lib/nameFilter";
 import { CodeReveal } from "./CodeReveal";
 import { DeleteParticipantDialog } from "./DeleteParticipantDialog";
+import { SendPanel } from "./SendPanel";
 
 const MESSAGES: Record<string, string> = {
   invalid_request: "입력값을 확인해주세요.",
@@ -83,40 +84,14 @@ export function ParticipantsTab({
   // null = no dialog, otherwise the ids to reissue (empty array means everyone).
   const [confirming, setConfirming] = useState<string[] | null>(null);
   const [issuedCsv, setIssuedCsv] = useState<string | null>(null);
-  const [emailOn, setEmailOn] = useState(false);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [sendError, setSendError] = useState<string | undefined>();
-  const [sendingPending, setSendingPending] = useState(false);
-  const [sendResult, setSendResult] = useState<
-    { sent: number; failed: number } | null
-  >(null);
   const [nameQuery, setNameQuery] = useState("");
 
   const visible = participants.filter((p) =>
     nameMatches(nameQuery, p.displayName)
   );
-
-  // Has an address to send to, and the code they currently hold has never been
-  // mailed. Anyone without an email is not pending -- there is no way to reach
-  // them, so counting them would only inflate the number.
-  const pending = participants.filter((p) =>
-    p.email !== null && p.email !== "" && p.codeSentAt === null
-  );
-
-  useEffect(() => {
-    let alive = true;
-    adminData<{ enabled: boolean }>(token, "email_status")
-      .then((r) => {
-        if (alive) setEmailOn(r.enabled);
-      })
-      // A failure here only means the button stays hidden, which is the safe
-      // default; the tab must still work.
-      .catch(() => undefined);
-    return () => {
-      alive = false;
-    };
-  }, [token]);
 
   async function sendCode(): Promise<void> {
     if (revealed === null || sending) return;
@@ -136,25 +111,6 @@ export function ParticipantsTab({
       );
     } finally {
       setSending(false);
-    }
-  }
-
-  async function sendPending(): Promise<void> {
-    if (busy) return;
-    setBusy(true);
-    setError(undefined);
-    try {
-      const result = await adminData<{ sent: number; failed: number }>(
-        token,
-        "send_pending_codes",
-      );
-      setSendingPending(false);
-      setSendResult(result);
-      onChanged();
-    } catch (caught) {
-      report(caught);
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -408,16 +364,6 @@ export function ParticipantsTab({
         </p>
 
         <div className="ml-auto flex flex-wrap gap-xs">
-          {emailOn && pending.length > 0 && (
-            <Button
-              type="button"
-              variant="caution"
-              bordered
-              onClick={() => setSendingPending(true)}
-            >
-              미발송 {pending.length}명에게 발송
-            </Button>
-          )}
           <Button
             type="button"
             variant="tertiary"
@@ -449,46 +395,7 @@ export function ParticipantsTab({
         </div>
       </div>
 
-      {sendingPending && (
-        <ConfirmDialog
-          title={`미발송 ${pending.length}명에게 코드를 보냅니다`}
-          confirmLabel="발송"
-          busy={busy}
-          onConfirm={() => void sendPending()}
-          onCancel={() => setSendingPending(false)}
-          body={
-            <>
-              <p>
-                이메일이 등록되어 있고 아직 코드를 받지 못한{" "}
-                {pending.length}명이 대상입니다. 이미 받은 분께는 가지 않습니다.
-              </p>
-              <p className="mt-md">
-                서버는 코드를 해시로만 보관해 기존 코드를 다시 보낼 수 없습니다.
-                그래서 <strong>각자에게 새 코드가 발급되어</strong> 나갑니다.
-                받은 적이 없는 분들이라 잃는 코드는 없습니다.
-              </p>
-              <p className="mt-md text-mute">
-                메일 서비스의 하루 발송 한도는 300통입니다. 넘는 인원은 실패로
-                남고, 다음 날 이 버튼을 다시 누르면 남은 분들만 잡힙니다.
-              </p>
-            </>
-          }
-        />
-      )}
-
-      {sendResult !== null && (
-        <div className="mt-lg rounded-md border border-hairline bg-surface-card px-lg py-lg">
-          <p className="type-body-sm">
-            {sendResult.sent}명에게 발송했습니다
-            {sendResult.failed > 0 && `, ${sendResult.failed}명 실패`}.
-          </p>
-          {sendResult.failed > 0 && (
-            <p className="type-body-sm mt-xs text-mute">
-              실패한 분들은 미발송으로 남아 있습니다. 다시 누르면 재시도합니다.
-            </p>
-          )}
-        </div>
-      )}
+      <SendPanel token={token} onChanged={onChanged} />
 
       {confirming !== null && (
         <ConfirmDialog
@@ -550,7 +457,7 @@ export function ParticipantsTab({
           name={revealed.name}
           code={revealed.code}
           email={revealed.email}
-          canSend={emailOn}
+          canSend
           sending={sending}
           sent={sent}
           sendError={sendError}
