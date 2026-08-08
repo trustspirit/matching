@@ -77,6 +77,14 @@ export interface AdminParticipantRow {
   email: string | null;
 }
 
+/** What deleting a participant would take with it. */
+export interface ImpactRow {
+  session: Session;
+  venue: string;
+  team: string | null;
+  partnerName: string;
+}
+
 /** One line of the code CSV handed back to the organizer after an import. */
 export interface CodeRow {
   displayName: string;

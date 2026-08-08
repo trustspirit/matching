@@ -209,3 +209,232 @@ Deno.test("rejects a delete for an unknown id", async () => {
   assertEquals(res.status, 404);
   assertEquals((await res.json()).error, "not_found");
 });
+
+Deno.test("reports what a participant deletion would remove", async () => {
+  await seed();
+  const { maleId } = await ids();
+
+  const res = await call("participant_impact", { id: maleId });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.matches.length, 1);
+  assertEquals(body.matches[0].partnerName, "표여");
+  assertEquals(body.matches[0].session, "1부");
+  assertEquals(body.matches[0].venue, "소극장");
+});
+
+Deno.test("reports an empty impact for a participant with no match", async () => {
+  const created = await (await call("create_participant", {
+    displayName: "영향없음",
+    birthdate: "1995-05-05",
+    gender: "M",
+    contact: "",
+    email: "",
+  })).json();
+
+  const body = await (await call("participant_impact", { id: created.id })).json();
+  assertEquals(body.matches, []);
+});
+
+Deno.test("rejects participant_impact without an id", async () => {
+  const res = await call("participant_impact");
+  assertEquals(res.status, 400);
+  assertEquals((await res.json()).error, "invalid_request");
+});
+
+/**
+ * Finds a participant id by display name. The rename tests below change the
+ * display name, so ids() -- which insists both seeded people still exist under
+ * their original names -- stops working after them.
+ */
+async function idOf(displayName: string): Promise<string> {
+  const body = await (await call("list_participants")).json();
+  const row = body.participants.find(
+    (p: { displayName: string }) => p.displayName === displayName,
+  );
+  assert(row, `participant not found: ${displayName}`);
+  return row.id;
+}
+
+/** Logs in as a participant to prove a code works. */
+async function login(name: string, code: string): Promise<Response> {
+  return await fetch(`${BASE}/lookup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, code }),
+  });
+}
+
+Deno.test("creates a participant and the returned code works", async () => {
+  const res = await call("create_participant", {
+    displayName: "신규남",
+    birthdate: "1998-08-08",
+    gender: "M",
+    contact: "010-1111-2222",
+    email: "new@example.com",
+  });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assert(typeof body.id === "string" && body.id.length > 0);
+  assert(typeof body.code === "string" && body.code.length === 6);
+
+  // A brand-new participant has no match yet, but the code must authenticate.
+  const ok = await login("신규남", body.code);
+  assertEquals(ok.status, 200);
+  assertEquals((await ok.json()).matches, []);
+});
+
+Deno.test("rejects a duplicate name and birthdate", async () => {
+  const res = await call("create_participant", {
+    displayName: "신규남",
+    birthdate: "1998-08-08",
+    gender: "M",
+    contact: "",
+    email: "",
+  });
+  assertEquals(res.status, 409);
+  assertEquals((await res.json()).error, "duplicate_participant");
+});
+
+Deno.test("rejects a participant with a blank name", async () => {
+  const res = await call("create_participant", {
+    displayName: "   ",
+    birthdate: "1998-08-08",
+    gender: "M",
+    contact: "",
+    email: "",
+  });
+  assertEquals(res.status, 400);
+  assertEquals((await res.json()).error, "invalid_request");
+});
+
+Deno.test("renaming updates both the lookup key and the display name", async () => {
+  await seed();
+  const { maleId } = await ids();
+
+  // Capture a working code first: renaming must not invalidate it.
+  const reissued = await (await call("regenerate_code", { id: maleId })).json();
+  assertEquals((await login("표남", reissued.code)).status, 200);
+
+  const res = await call("update_participant", {
+    id: maleId,
+    displayName: "표남고침",
+    birthdate: "1999-01-02",
+    gender: "M",
+    contact: "010-0000-0001",
+    email: "a@example.com",
+  });
+  assertEquals(res.status, 200);
+
+  // The new name works, the old one does not: `name` was normalized and
+  // stored alongside `display_name`.
+  assertEquals((await login("표남고침", reissued.code)).status, 200);
+  assertEquals((await login("표남", reissued.code)).status, 401);
+
+  const list = await (await call("list_participants")).json();
+  const row = list.participants.find((p: { id: string }) => p.id === maleId);
+  assertEquals(row.displayName, "표남고침");
+});
+
+Deno.test("updating a participant leaves the code valid", async () => {
+  const maleId = await idOf("표남고침");
+  const reissued = await (await call("regenerate_code", { id: maleId })).json();
+
+  const res = await call("update_participant", {
+    id: maleId,
+    displayName: "표남고침",
+    birthdate: "1999-01-02",
+    gender: "M",
+    contact: "010-9999-9999",
+    email: "changed@example.com",
+  });
+  await res.body?.cancel();
+
+  // update_participant must not touch code_salt/code_hash.
+  assertEquals((await login("표남고침", reissued.code)).status, 200);
+});
+
+Deno.test("rejects a rename that collides with another participant", async () => {
+  const list = await (await call("list_participants")).json();
+  const target = list.participants.find(
+    (p: { displayName: string }) => p.displayName === "표여",
+  );
+  assert(target);
+
+  const res = await call("update_participant", {
+    id: target.id,
+    displayName: "표남고침",
+    birthdate: "1999-01-02",
+    gender: "F",
+    contact: "",
+    email: "",
+  });
+  assertEquals(res.status, 409);
+  assertEquals((await res.json()).error, "duplicate_participant");
+});
+
+Deno.test("regenerating a code invalidates the old one", async () => {
+  const femaleId = await idOf("표여");
+
+  const first = await (await call("regenerate_code", { id: femaleId })).json();
+  assert(typeof first.code === "string" && first.code.length === 6);
+  assertEquals((await login("표여", first.code)).status, 200);
+
+  const second = await (await call("regenerate_code", { id: femaleId })).json();
+  assert(second.code !== first.code);
+
+  // Only the newest code authenticates; the server never kept the old one.
+  assertEquals((await login("표여", first.code)).status, 401);
+  assertEquals((await login("표여", second.code)).status, 200);
+});
+
+Deno.test("regenerating one code leaves everyone else alone", async () => {
+  const maleId = await idOf("표남고침");
+  const femaleId = await idOf("표여");
+  const male = await (await call("regenerate_code", { id: maleId })).json();
+  const female = await (await call("regenerate_code", { id: femaleId })).json();
+
+  const maleAgain = await (await call("regenerate_code", { id: maleId })).json();
+  assertEquals((await login("표남고침", male.code)).status, 401);
+  assertEquals((await login("표남고침", maleAgain.code)).status, 200);
+  assertEquals((await login("표여", female.code)).status, 200);
+});
+
+Deno.test("rejects regenerate_code for an unknown participant", async () => {
+  const res = await call("regenerate_code", {
+    id: "00000000-0000-0000-0000-000000000000",
+  });
+  assertEquals(res.status, 404);
+  assertEquals((await res.json()).error, "not_found");
+});
+
+Deno.test("deletes a participant and their matches go with them", async () => {
+  const maleId = await idOf("표남고침");
+  const before = await (await call("list_matches")).json();
+  const affected = before.matches.filter(
+    (m: { maleId: string }) => m.maleId === maleId,
+  ).length;
+  assert(affected > 0, "expected the participant to have a match");
+
+  const res = await call("delete_participant", { id: maleId });
+  assertEquals(res.status, 200);
+  await res.body?.cancel();
+
+  const people = await (await call("list_participants")).json();
+  assertEquals(
+    people.participants.filter((p: { id: string }) => p.id === maleId).length,
+    0,
+  );
+
+  // on delete cascade removes the match rows too.
+  const after = await (await call("list_matches")).json();
+  assertEquals(after.matches.length, before.matches.length - affected);
+});
+
+Deno.test("rejects a delete for an unknown participant", async () => {
+  const res = await call("delete_participant", {
+    id: "00000000-0000-0000-0000-000000000000",
+  });
+  assertEquals(res.status, 404);
+  assertEquals((await res.json()).error, "not_found");
+});
