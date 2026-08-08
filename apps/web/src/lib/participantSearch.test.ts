@@ -3,10 +3,10 @@ import type { AdminParticipantRow } from "@shared/types.ts";
 import { searchParticipants } from "./participantSearch";
 
 const people: AdminParticipantRow[] = [
-  { id: "1", displayName: "김철수", birthdate: "1999-01-02", gender: "M", contact: null, email: null },
-  { id: "2", displayName: "김철수", birthdate: "2001-07-14", gender: "M", contact: null, email: null },
-  { id: "3", displayName: "김철민", birthdate: "2000-03-22", gender: "M", contact: null, email: null },
-  { id: "4", displayName: "이영희", birthdate: "1999-05-06", gender: "F", contact: null, email: null },
+  { id: "1", displayName: "김철수", birthdate: "1999-01-02", gender: "M", contact: null, email: null, codeSentAt: null },
+  { id: "2", displayName: "김철수", birthdate: "2001-07-14", gender: "M", contact: null, email: null, codeSentAt: null },
+  { id: "3", displayName: "김철민", birthdate: "2000-03-22", gender: "M", contact: null, email: null, codeSentAt: null },
+  { id: "4", displayName: "이영희", birthdate: "1999-05-06", gender: "F", contact: null, email: null, codeSentAt: null },
 ];
 
 describe("searchParticipants", () => {
