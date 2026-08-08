@@ -178,15 +178,16 @@ Deno.test("writes nothing when the CSV has errors", async () => {
   assertEquals((await check.json()).participants.created, 0);
 });
 
-Deno.test("re-import resets the send queue, but only clears code_sent_at when the code actually changed", async () => {
+Deno.test("re-import resets the send queue, but only clears code_sent_at and the send claim when the code actually changed", async () => {
   // A stale ceiling/claim/error from a run that happened before this
   // correction. A re-upload -- the admin's most natural fix for a typo'd
   // address -- must reopen the row for claim_pending_codes.
+  const staleClaimId = crypto.randomUUID();
   await sql(
     `update participants
         set send_attempts   = 5,
             send_last_error = 'old failure',
-            send_claim_id   = gen_random_uuid(),
+            send_claim_id   = '${staleClaimId}',
             send_claimed_at = now(),
             code_sent_at    = now()
       where name = '임포트남';`,
@@ -201,8 +202,16 @@ Deno.test("re-import resets the send queue, but only clears code_sent_at when th
     "0",
   );
   assertEquals(
+    await sql("select send_last_error is null from participants where name = '임포트남';"),
+    "t",
+  );
+  // The code did not change, so a run still mid-flight sending it must be
+  // allowed to finish: the claim it holds must survive the re-import, or its
+  // later stamp() (guarded by `eq("send_claim_id", runId)`) becomes a no-op
+  // and the participant gets mailed a second, redundant code next run.
+  assertEquals(
     await sql(
-      "select send_last_error is null and send_claim_id is null and send_claimed_at is null from participants where name = '임포트남';",
+      `select send_claim_id = '${staleClaimId}' and send_claimed_at is not null from participants where name = '임포트남';`,
     ),
     "t",
   );
@@ -236,6 +245,28 @@ Deno.test("re-import resets the send queue, but only clears code_sent_at when th
   assertEquals(
     await sql("select code_sent_at is null from participants where name = '임포트남';"),
     "t",
+  );
+});
+
+Deno.test("re-import with an unchanged code leaves an in-flight send claim alone", async () => {
+  // Simulate a run mid-flight: it has claimed 임포트남 to send them a code.
+  const claimId = crypto.randomUUID();
+  await sql(
+    `update participants
+        set send_claim_id   = '${claimId}',
+            send_claimed_at = now()
+      where name = '임포트남';`,
+  );
+
+  // No regenerateCodes: the code is unchanged, so the claim above still
+  // guards a send that is genuinely in progress for the code the participant
+  // still has -- it must not be invalidated out from under that run.
+  const reimported = await (await upload(csv(ROW_A))).json();
+  assertEquals(codeFor(reimported.codesCsv, "임포트남"), "기존 코드 유지");
+
+  assertEquals(
+    await sql("select send_claim_id from participants where name = '임포트남';"),
+    claimId,
   );
 });
 
