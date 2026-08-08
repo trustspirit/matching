@@ -4,7 +4,7 @@
 1) Supabase 프로젝트 배포
    PROJECT_REF=<project-ref> \
    ADMIN_PASSWORD='<강한 비밀번호>' \
-   PAGES_ORIGIN='https://<project>.pages.dev,http://localhost:5173' \
+   SITE_ORIGIN='https://matching.<계정-서브도메인>.workers.dev,http://localhost:5173' \
      ./scripts/deploy.sh
 
    이 스크립트가 link → db push → secrets set → functions deploy →
@@ -19,25 +19,44 @@
    - 시크릿을 바꾸면 반드시 함수를 다시 배포해야 반영된다. 스크립트를
      다시 실행하면 그 순서가 지켜진다.
 
-   PAGES_ORIGIN 닭-달걀: Pages 도메인은 Pages를 한 번 배포해야 생긴다.
-   최초에는 PAGES_ORIGIN='http://localhost:5173'으로 실행하고, 2)에서
-   도메인이 생긴 뒤 실제 도메인을 넣어 스크립트를 다시 실행한다.
+   SITE_ORIGIN 닭-달걀: workers.dev 도메인은 Worker를 한 번 배포해야
+   생긴다. 최초에는 SITE_ORIGIN='http://localhost:5173'으로 실행하고,
+   2)에서 도메인이 생긴 뒤 실제 도메인을 넣어 다시 실행한다. 스크립트가
+   멱등하므로 재실행 비용은 없다.
 
-2) Cloudflare Pages 설정
-   - 저장소: trustspirit/matching, 브랜치: main
-   - Root directory: 저장소 루트 그대로 둔다. apps/web으로 바꾸면
+2) Cloudflare Workers 설정
+   Cloudflare가 Pages를 Workers로 통합했으므로 Workers Builds를 쓴다.
+   대시보드 → Workers & Pages → Create → 저장소 연결(trustspirit/matching).
+
+   대시보드에 입력하는 값은 셋뿐이다.
+     - Production branch: main
+     - Build command:  pnpm install && pnpm --filter web build
+     - Deploy command: pnpm exec wrangler deploy
+     - 환경 변수(Production):
+         VITE_API_URL=https://<PROJECT_REF>.supabase.co/functions/v1
+
+   나머지는 저장소의 wrangler.jsonc가 정한다.
+     - 출력 디렉터리(assets.directory = ./apps/web/dist)
+     - SPA 폴백(not_found_handling = single-page-application)
+     - 워커 이름(name = matching)
+   대시보드에 "Build output directory" 필드가 없는 이유가 이것이다.
+
+   주의
+   - Root directory는 저장소 루트로 둔다. apps/web으로 바꾸면
      vite.config.ts의 @shared alias가 해석되지 않아 빌드가 실패한다.
-   - 빌드 명령: pnpm install && pnpm --filter web build
-   - 출력 디렉터리: apps/web/dist
-   - 환경 변수: VITE_API_URL=https://<PROJECT_REF>.supabase.co/functions/v1
-   - pnpm 버전은 package.json의 packageManager 필드가 고정하므로
-     Pages 환경 변수로 지정하지 않는다.
+   - VITE_ 변수는 런타임이 아니라 빌드 시점에 번들에 박힌다. 첫 빌드
+     전에 넣어야 하고, 값을 바꾸면 재배포해야 반영된다. 없이 빌드되면
+     화면에 "사이트 설정이 완료되지 않았습니다."가 뜬다.
+   - pnpm 버전은 package.json의 packageManager 필드가, wrangler 버전은
+     devDependency가 고정한다. 대시보드에 버전을 지정하지 않는다.
+   - 배포 URL은 <name>.<계정-서브도메인>.workers.dev 이다. Pages의
+     *.pages.dev와 달리 계정 범위라 다른 사람의 프로젝트와 겹치지 않는다.
 
 3) 배포 후 확인
    - deploy.sh의 스모크 테스트가 게이트웨이 401, CORS, 관리자 비밀번호
      반영, RLS를 자동으로 검사한다. 전부 통과해야 배포가 끝난다.
-   - https://<project>.pages.dev/ 접속 → 로그인 화면이 뜬다.
-   - https://<project>.pages.dev/admin 접속 → 비밀번호 입력 화면이 뜬다.
+   - https://matching.<계정-서브도메인>.workers.dev/ 접속 → 로그인 화면
+   - .../admin 접속 → 비밀번호 입력 화면이 뜬다.
 
 4) 실제 데이터 투입
    - 최종 엑셀을 CSV로 저장. 컬럼: 부, 시간, 장소, 조,

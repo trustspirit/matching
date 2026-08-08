@@ -2,12 +2,13 @@
 # Deploys the database and Edge Functions, then verifies the deployment.
 #
 # Re-running this script is cheap and idempotent. That is the intended fix for
-# the ALLOWED_ORIGIN ordering problem: run it once before Cloudflare Pages
-# exists (PAGES_ORIGIN=http://localhost:5173), then again with the real Pages
-# domain once it does.
+# the ALLOWED_ORIGIN ordering problem: run it once before the Cloudflare Worker
+# exists (SITE_ORIGIN=http://localhost:5173), then again with the real
+# workers.dev domain once it does.
 #
 # Usage:
-#   PROJECT_REF=abcd ADMIN_PASSWORD=... PAGES_ORIGIN=https://x.pages.dev \
+#   PROJECT_REF=abcd ADMIN_PASSWORD=... \
+#     SITE_ORIGIN=https://matching.<subdomain>.workers.dev \
 #     ./scripts/deploy.sh [--dry-run]
 set -euo pipefail
 
@@ -17,7 +18,7 @@ DRY_RUN=false
 missing=()
 [[ -z "${PROJECT_REF:-}" ]]    && missing+=(PROJECT_REF)
 [[ -z "${ADMIN_PASSWORD:-}" ]] && missing+=(ADMIN_PASSWORD)
-[[ -z "${PAGES_ORIGIN:-}" ]]   && missing+=(PAGES_ORIGIN)
+[[ -z "${SITE_ORIGIN:-}" ]]   && missing+=(SITE_ORIGIN)
 if (( ${#missing[@]} > 0 )); then
   echo "missing required environment variables: ${missing[*]}" >&2
   exit 1
@@ -42,7 +43,7 @@ run pnpm exec supabase db push
 echo "==> setting secrets"
 run pnpm exec supabase secrets set \
   "ADMIN_PASSWORD=${ADMIN_PASSWORD}" \
-  "ALLOWED_ORIGIN=${PAGES_ORIGIN}"
+  "ALLOWED_ORIGIN=${SITE_ORIGIN}"
 
 # Secrets only take effect on redeploy, so this must follow the step above.
 echo "==> deploying functions"
@@ -74,7 +75,7 @@ echo "    ok"
 # when cors.ts is correct -- the same class of local/production divergence as
 # the JWT gateway. Do not "fix" a local failure by loosening this assertion.
 echo "==> smoke test 2/4: CORS allows the site origin"
-first_origin="${PAGES_ORIGIN%%,*}"
+first_origin="${SITE_ORIGIN%%,*}"
 allow=$(curl -sS -X OPTIONS "${FUNCTIONS_URL}/lookup" \
   -H "Origin: ${first_origin}" \
   -D - -o /dev/null \
