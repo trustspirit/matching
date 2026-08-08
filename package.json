@@ -1,6 +1,7 @@
 {
   "name": "blind-date-match",
   "private": true,
+  "packageManager": "pnpm@10.9.0",
   "type": "module",
   "scripts": {
     "test": "vitest run",
