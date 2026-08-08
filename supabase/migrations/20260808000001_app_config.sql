@@ -12,8 +12,22 @@ alter table public.app_config enable row level security;
 -- `on conflict do nothing` is load-bearing. Without it, re-running `db push`
 -- would mint a new salt, every existing login_attempts.ip_hash would stop
 -- matching, and the rate limiter would silently stop throttling.
+--
+-- Built from gen_random_uuid() rather than pgcrypto's gen_random_bytes().
+-- pgcrypto installs into `public` locally but into the `extensions` schema on
+-- Supabase's hosted platform, which is not on the migration search_path, so
+-- gen_random_bytes() resolves locally and fails on deploy with
+-- "function gen_random_bytes(integer) does not exist". Schema-qualifying it as
+-- extensions.gen_random_bytes() would invert the problem and break locally.
+-- gen_random_uuid() is a Postgres 13+ core function in pg_catalog, backed by
+-- the same strong RNG, so it resolves identically in both environments.
+-- Two UUIDs stripped of dashes give the same 64 hex characters as before.
 insert into public.app_config (key, value)
-values ('ip_hash_salt', encode(gen_random_bytes(32), 'hex'))
+values (
+  'ip_hash_salt',
+  replace(gen_random_uuid()::text, '-', '') ||
+    replace(gen_random_uuid()::text, '-', '')
+)
 on conflict (key) do nothing;
 
 -- See 20260807000003_grants.sql: service_role needs an explicit table grant.
