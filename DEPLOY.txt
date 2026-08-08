@@ -1,56 +1,51 @@
 배포 절차
 =========
 
-1) Supabase 프로젝트 준비
-   supabase link --project-ref <PROJECT_REF>
-   supabase db push
+1) Supabase 프로젝트 배포
+   PROJECT_REF=<project-ref> \
+   ADMIN_PASSWORD='<강한 비밀번호>' \
+   PAGES_ORIGIN='https://<project>.pages.dev,http://localhost:5173' \
+     ./scripts/deploy.sh
 
-2) Supabase 시크릿 설정
-   supabase secrets set \
-     ADMIN_PASSWORD='<강한 비밀번호>' \
-     ALLOWED_ORIGIN='https://<project>.pages.dev,http://localhost:5173' \
-     IP_HASH_SALT='<임의의 32자 이상 문자열>'
+   이 스크립트가 link → db push → secrets set → functions deploy →
+   스모크 테스트를 순서대로 실행한다. 한 단계라도 실패하면 즉시 멈춘다.
+   무엇을 실행할지만 보려면 --dry-run을 붙인다.
 
-   SUPABASE_URL과 SUPABASE_SERVICE_ROLE_KEY는 런타임이 자동 주입하므로
-   직접 설정하지 않는다.
+   - IP 해시 salt는 db push가 자동 생성하므로 따로 설정하지 않는다.
+   - SUPABASE_URL과 SUPABASE_SERVICE_ROLE_KEY는 런타임이 자동 주입한다.
+   - supabase link는 DB 비밀번호를 대화형으로 묻는다. 비대화형으로
+     실행하려면 SUPABASE_DB_PASSWORD를 환경에 넣어둔다.
+   - ANON_KEY를 함께 넘기면 RLS 점검까지 수행한다.
+   - 시크릿을 바꾸면 반드시 함수를 다시 배포해야 반영된다. 스크립트를
+     다시 실행하면 그 순서가 지켜진다.
 
-3) Edge Functions 배포
-   supabase functions deploy lookup --no-verify-jwt
-   supabase functions deploy admin-import --no-verify-jwt
+   PAGES_ORIGIN 닭-달걀: Pages 도메인은 Pages를 한 번 배포해야 생긴다.
+   최초에는 PAGES_ORIGIN='http://localhost:5173'으로 실행하고, 2)에서
+   도메인이 생긴 뒤 실제 도메인을 넣어 스크립트를 다시 실행한다.
 
-   --no-verify-jwt가 없으면 배포된 함수가 플랫폼 게이트웨이 단계에서
-   모든 요청을 401로 거부한다. lookup과 admin-import는 Supabase가 발급한
-   JWT를 전혀 받지 않으며(각자 코드 해시 비교/ADMIN_PASSWORD로 자체 인증),
-   supabase/config.toml에도 이미 verify_jwt = false를 설정해 두었으므로
-   이 플래그는 이중 안전장치다.
-
-4) Cloudflare Pages 설정
+2) Cloudflare Pages 설정
    - 저장소: trustspirit/matching, 브랜치: main
+   - Root directory: 저장소 루트 그대로 둔다. apps/web으로 바꾸면
+     vite.config.ts의 @shared alias가 해석되지 않아 빌드가 실패한다.
    - 빌드 명령: pnpm install && pnpm --filter web build
    - 출력 디렉터리: apps/web/dist
    - 환경 변수: VITE_API_URL=https://<PROJECT_REF>.supabase.co/functions/v1
+   - pnpm 버전은 package.json의 packageManager 필드가 고정하므로
+     Pages 환경 변수로 지정하지 않는다.
 
-5) 배포 후 확인
-   - https://<project>.pages.dev/ 접속 → 로그인 화면이 뜬다
+3) 배포 후 확인
+   - deploy.sh의 스모크 테스트가 게이트웨이 401, CORS, 관리자 비밀번호
+     반영, RLS를 자동으로 검사한다. 전부 통과해야 배포가 끝난다.
+   - https://<project>.pages.dev/ 접속 → 로그인 화면이 뜬다.
+   - https://<project>.pages.dev/admin 접속 → 비밀번호 입력 화면이 뜬다.
 
-   - 잘못된 코드로 앱 레벨 401이 오는지 확인 (게이트웨이 401과 구분할 것):
-       curl -s -X POST "https://<PROJECT_REF>.supabase.co/functions/v1/lookup" \
-         -H "Content-Type: application/json" \
-         -d '{"name":"존재하지않음","code":"XXXXXX"}'
-     → 정상: {"error":"invalid_credentials"} (본문에 "error" 필드가 있어야 한다)
-     → 배포 실패 신호: {"code":401,"message":"Missing authorization header"}
-       이 메시지가 나오면 --no-verify-jwt 배포가 적용되지 않은 것이다.
-       supabase functions deploy를 --no-verify-jwt와 함께 다시 실행한다.
-
-   - REST 엔드포인트가 막혀 있는지 확인:
-       curl "https://<PROJECT_REF>.supabase.co/rest/v1/participants?select=*" \
-         -H "apikey: <ANON_KEY>"
-     → 참가자 데이터가 나오면 안 된다. 나오면 RLS를 즉시 점검한다.
-
-6) 실제 데이터 투입
+4) 실제 데이터 투입
    - 최종 엑셀을 CSV로 저장. 컬럼: 부, 시간, 장소, 조,
      남성 이름/생년월일/연락처/이메일, 여성 이름/생년월일/연락처/이메일
-   - /admin 접속 → 비밀번호 + CSV 업로드
+   - /admin 접속 → 비밀번호를 입력해 들어간다. 여기서 쓰는 비밀번호는
+     deploy.sh에 넣은 ADMIN_PASSWORD와 같은 값이다. 별도 계정이나 등록
+     절차는 없고 관리자는 한 명뿐이다.
+   - 들어간 뒤 CSV를 업로드한다.
    - 다운로드된 참가자_코드.csv를 안전한 곳에 보관
    - 참가자에게 이름과 코드를 전달
 
@@ -62,8 +57,12 @@
 - 참가자 자체는 삭제되지 않으므로 코드는 계속 유효하지만, 매칭이 없는
   참가자는 로그인 시 "등록된 매칭 정보가 없습니다"로 보이게 된다.
 - 평문 코드는 업로드 응답에서만 얻을 수 있다. 서버에는 해시만 남는다.
+  업로드 성공 화면을 새로고침하면 평문 코드는 영구히 사라진다. 반드시
+  다운로드된 CSV를 먼저 보관한 뒤 화면을 떠난다.
 - 조를 추가하는 재업로드(전체 매칭 CSV 기준)는 기존 코드를 바꾸지 않는다.
 - "전원 코드 재발급"을 켜면 이미 배포한 코드가 전부 무효가 된다.
+- 관리자 비밀번호를 15분 안에 10번 틀리면 잠시 차단된다. 15분 뒤 자동으로
+  풀린다.
 - 사전 리허설 권장: 실제 이벤트 전에 별도 프로젝트에서 실제 엑셀로
   임포트 → 동명이인 1명·2회 참여자 1명 포함 3명 이상 로그인 → 코드 CSV를
   엑셀로 열어 한글이 깨지지 않는지 확인한다.
