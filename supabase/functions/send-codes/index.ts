@@ -235,7 +235,8 @@ async function stamp(
   await db
     .from("participants")
     .update({ send_last_error: "발송됨, 기록 실패 — 중복 발송 가능" })
-    .eq("id", id);
+    .eq("id", id)
+    .eq("send_claim_id", runId);
 }
 
 type OneResult = "sent" | "failed" | "cancelled" | "quota" | "time";
@@ -286,33 +287,38 @@ async function run(db: SupabaseClient): Promise<RunSummary | null> {
   let sent = 0;
   let failed = 0;
 
-  for (;;) {
-    if (Date.now() >= deadline) {
-      await release(db, runId);
-      return { outcome: "time", sent, failed };
-    }
-
-    const batch = await claim(db, runId);
-    if (batch === null) return null;
-    if (batch.length === 0) {
-      // The queue is empty. Disarm so the next CSV import cannot start mailing
-      // people before anyone has looked at it, and drop any quota backoff so a
-      // stale timestamp cannot delay the next event's first run.
-      await setArmed(db, false);
-      await setRetryAfter(db, null);
-      return { outcome: "done", sent, failed };
-    }
-
-    for (const person of batch) {
+  try {
+    for (;;) {
       if (Date.now() >= deadline) {
-        await release(db, runId);
         return { outcome: "time", sent, failed };
       }
-      const result = await sendOne(db, runId, person, taken);
-      if (result === "sent") sent++;
-      else if (result === "failed") failed++;
-      // "cancelled" is neither: nothing was sent and nothing went wrong.
+
+      const batch = await claim(db, runId);
+      if (batch === null) return null;
+      if (batch.length === 0) {
+        // The queue is empty. Disarm so the next CSV import cannot start
+        // mailing people before anyone has looked at it, and drop any quota
+        // backoff so a stale timestamp cannot delay the next event's first run.
+        await setArmed(db, false);
+        await setRetryAfter(db, null);
+        return { outcome: "done", sent, failed };
+      }
+
+      for (const person of batch) {
+        if (Date.now() >= deadline) {
+          return { outcome: "time", sent, failed };
+        }
+        const result = await sendOne(db, runId, person, taken);
+        if (result === "sent") sent++;
+        else if (result === "failed") failed++;
+        // "cancelled" is neither: nothing was sent and nothing went wrong.
+      }
     }
+  } finally {
+    // Every exit -- normal, early, or thrown -- hands back whatever this run
+    // still holds. A leaked claim hides that participant from the queue for
+    // the full five-minute stale window, and later tasks add more exits.
+    await release(db, runId);
   }
 }
 
