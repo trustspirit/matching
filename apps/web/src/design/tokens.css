@@ -134,8 +134,15 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* The system's signature double-ring focus signal. */
-:where(input, button, a, [tabindex]):focus-visible {
-  outline: 4px solid var(--color-focus-outer);
-  outline-offset: 2px;
+/* Focus signal. The negative offset draws the outline over the element's own
+   edge, so a bordered control reads as its border changing colour rather than
+   gaining a detached ring.
+   It stays an outline rather than a border-color swap because buttons in this
+   system have no border at all -- bg-primary and friends carry their shape
+   through background alone -- and a border-only rule would leave every button
+   with no focus indicator. 2px also keeps WCAG 2.2 focus appearance, which a
+   1px border-colour change on its own would not. */
+:where(input, button, a, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-focus-outer);
+  outline-offset: -1px;
 }

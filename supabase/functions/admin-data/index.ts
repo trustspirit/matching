@@ -1,7 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { handlePreflight, jsonResponse } from "../_shared/cors.ts";
 import { createServiceClient } from "../_shared/db.ts";
-import { timingSafeEqual } from "../_shared/hash.ts";
+import { hashCode, randomSalt, timingSafeEqual } from "../_shared/hash.ts";
+import { generateCode } from "../_shared/lib/code.ts";
+import { normalizeName } from "../_shared/lib/name.ts";
 import {
   ADMIN_POLICY,
   clientIp,
@@ -13,6 +15,7 @@ import {
 import type {
   AdminMatchRow,
   AdminParticipantRow,
+  ImpactRow,
   Session,
 } from "../_shared/lib/types.ts";
 
@@ -93,6 +96,78 @@ async function listParticipants(
     contact: r.contact,
     email: r.email,
   }));
+}
+
+/** Row shape returned by matches_for_participant (snake_case from SQL). */
+interface ImpactRpcRow {
+  session: string;
+  venue: string;
+  team: string | null;
+  partner_name: string;
+}
+
+/**
+ * Reuses the RPC the participant lookup already depends on. It returns exactly
+ * the fields the delete confirmation needs -- session, venue, team and the
+ * partner's name -- so no new query is required.
+ */
+async function participantImpact(
+  db: SupabaseClient,
+  id: string,
+): Promise<ImpactRow[] | null> {
+  const { data, error } = await db
+    .rpc("matches_for_participant", { p_id: id })
+    .returns<ImpactRpcRow[]>();
+  if (error) {
+    console.error("participant_impact failed", error);
+    return null;
+  }
+  return (data ?? []).map((r) => ({
+    session: r.session as Session,
+    venue: r.venue,
+    team: r.team,
+    partnerName: r.partner_name,
+  }));
+}
+
+interface ParticipantInput {
+  displayName: string;
+  birthdate: string;
+  gender: "M" | "F";
+  contact: string | null;
+  email: string | null;
+}
+
+function readParticipantInput(payload: unknown): ParticipantInput | null {
+  const p = payload as Record<string, unknown>;
+  const str = (key: string): string => typeof p[key] === "string" ? p[key] : "";
+
+  const displayName = str("displayName").trim();
+  const birthdate = str("birthdate").trim();
+  const gender = str("gender");
+
+  if (displayName === "") return null;
+  // The column is a date; anything else makes Postgres raise instead of
+  // returning a usable error to the operator.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(birthdate)) return null;
+  if (gender !== "M" && gender !== "F") return null;
+
+  const contact = str("contact").trim();
+  const email = str("email").trim();
+  return {
+    displayName,
+    birthdate,
+    gender,
+    // Empty strings are stored as NULL so the participant screen and the code
+    // CSV render a blank rather than an empty-looking value.
+    contact: contact === "" ? null : contact,
+    email: email === "" ? null : email,
+  };
+}
+
+/** Postgres unique_violation. Raised by participants_identity_key. */
+function isDuplicate(error: { code?: string } | null): boolean {
+  return error?.code === "23505";
 }
 
 interface MatchInput {
@@ -256,6 +331,136 @@ Deno.serve(async (req: Request): Promise<Response> => {
       return jsonResponse(req, { error: "not_found" }, 404);
     }
     return jsonResponse(req, { ok: true });
+  }
+
+  if (action === "participant_impact") {
+    const id = (payload as { id?: unknown }).id;
+    if (typeof id !== "string" || id === "") {
+      return jsonResponse(req, { error: "invalid_request" }, 400);
+    }
+    const matches = await participantImpact(db, id);
+    if (matches === null) return jsonResponse(req, { error: "server_error" }, 500);
+    return jsonResponse(req, { matches });
+  }
+
+  if (action === "create_participant") {
+    const input = readParticipantInput(payload);
+    if (input === null) return jsonResponse(req, { error: "invalid_request" }, 400);
+
+    const code = generateCode();
+    const salt = randomSalt();
+    const hash = await hashCode(salt, code);
+
+    const { data, error } = await db
+      .from("participants")
+      .insert({
+        name: normalizeName(input.displayName),
+        display_name: input.displayName,
+        birthdate: input.birthdate,
+        gender: input.gender,
+        contact: input.contact,
+        email: input.email,
+        code_salt: salt,
+        code_hash: hash,
+      })
+      .select("id")
+      .single<{ id: string }>();
+
+    if (isDuplicate(error)) {
+      return jsonResponse(req, { error: "duplicate_participant" }, 409);
+    }
+    if (error || data === null) {
+      console.error("create_participant failed", error);
+      return jsonResponse(req, { error: "server_error" }, 500);
+    }
+    // The plaintext is returned exactly once; only its hash is stored.
+    return jsonResponse(req, { id: data.id, code });
+  }
+
+  if (action === "update_participant") {
+    const id = (payload as { id?: unknown }).id;
+    if (typeof id !== "string" || id === "") {
+      return jsonResponse(req, { error: "invalid_request" }, 400);
+    }
+    const input = readParticipantInput(payload);
+    if (input === null) return jsonResponse(req, { error: "invalid_request" }, 400);
+
+    // code_salt and code_hash are deliberately absent: renaming someone must
+    // not invalidate the code they were already given.
+    const { data, error } = await db
+      .from("participants")
+      .update({
+        name: normalizeName(input.displayName),
+        display_name: input.displayName,
+        birthdate: input.birthdate,
+        gender: input.gender,
+        contact: input.contact,
+        email: input.email,
+      })
+      .eq("id", id)
+      .select("id");
+
+    if (isDuplicate(error)) {
+      return jsonResponse(req, { error: "duplicate_participant" }, 409);
+    }
+    if (error) {
+      console.error("update_participant failed", error);
+      return jsonResponse(req, { error: "server_error" }, 500);
+    }
+    if ((data ?? []).length === 0) {
+      return jsonResponse(req, { error: "not_found" }, 404);
+    }
+    return jsonResponse(req, { ok: true });
+  }
+
+  if (action === "delete_participant") {
+    const id = (payload as { id?: unknown }).id;
+    if (typeof id !== "string" || id === "") {
+      return jsonResponse(req, { error: "invalid_request" }, 400);
+    }
+    // matches.male_id / female_id are ON DELETE CASCADE, so this also removes
+    // the person's matches. The UI shows that impact before calling here.
+    const { data, error } = await db
+      .from("participants")
+      .delete()
+      .eq("id", id)
+      .select("id");
+
+    if (error) {
+      console.error("delete_participant failed", error);
+      return jsonResponse(req, { error: "server_error" }, 500);
+    }
+    if ((data ?? []).length === 0) {
+      return jsonResponse(req, { error: "not_found" }, 404);
+    }
+    return jsonResponse(req, { ok: true });
+  }
+
+  if (action === "regenerate_code") {
+    const id = (payload as { id?: unknown }).id;
+    if (typeof id !== "string" || id === "") {
+      return jsonResponse(req, { error: "invalid_request" }, 400);
+    }
+
+    const code = generateCode();
+    const salt = randomSalt();
+    const hash = await hashCode(salt, code);
+
+    const { data, error } = await db
+      .from("participants")
+      .update({ code_salt: salt, code_hash: hash })
+      .eq("id", id)
+      .select("id");
+
+    if (error) {
+      console.error("regenerate_code failed", error);
+      return jsonResponse(req, { error: "server_error" }, 500);
+    }
+    if ((data ?? []).length === 0) {
+      return jsonResponse(req, { error: "not_found" }, 404);
+    }
+    // Returned once. The previous code is unrecoverable from this point.
+    return jsonResponse(req, { code });
   }
 
   return jsonResponse(req, { error: "invalid_request" }, 400);
