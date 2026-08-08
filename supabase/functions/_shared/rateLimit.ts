@@ -18,9 +18,40 @@ export function clientIp(req: Request): string {
   return forwarded.split(",")[0]?.trim() || "unknown";
 }
 
+const SALT_KEY = "ip_hash_salt";
+
+/**
+ * Cached across requests within a worker. Only a successful read is cached, so
+ * a transient DB fault does not poison the worker for its whole lifetime.
+ */
+let cachedSalt: string | null = null;
+
+/**
+ * Reads the server-generated IP hash salt. Returns null when it cannot be
+ * read; callers must then skip rate limiting entirely rather than hashing
+ * unsalted -- the IPv4 space is small enough to reverse without a salt, and a
+ * different hash space would not match previously recorded rows anyway.
+ */
+export async function getIpSalt(db: SupabaseClient): Promise<string | null> {
+  if (cachedSalt !== null) return cachedSalt;
+
+  const { data, error } = await db
+    .from("app_config")
+    .select("value")
+    .eq("key", SALT_KEY)
+    .maybeSingle<{ value: string }>();
+
+  if (error || !data) {
+    console.error("ip hash salt unavailable, skipping rate limit", error);
+    return null;
+  }
+  cachedSalt = data.value;
+  return cachedSalt;
+}
+
 /** Hashed with a server-side salt so raw addresses are never persisted. */
-export function hashIp(ip: string): Promise<string> {
-  return hashHex(ip + (Deno.env.get("IP_HASH_SALT") ?? ""));
+export function hashIp(ip: string, salt: string): Promise<string> {
+  return hashHex(ip + salt);
 }
 
 export async function isRateLimited(
