@@ -6,6 +6,7 @@ import { Card } from "../design/Card";
 import { TextInput } from "../design/TextInput";
 import { CsvTab } from "./admin/CsvTab";
 import { MatchesTab } from "./admin/MatchesTab";
+import { ParticipantsTab } from "./admin/ParticipantsTab";
 
 const MESSAGES: Record<string, string> = {
   unauthorized: "비밀번호가 올바르지 않습니다.",
@@ -152,11 +153,7 @@ export function Admin() {
           />
         )}
         {tab === "participants" && (
-          <Card>
-            <p className="type-body-md text-mute">
-              참가자 {participants.length}명
-            </p>
-          </Card>
+          <ParticipantsTab participants={participants} />
         )}
         {tab === "csv" && (
           <CsvTab
