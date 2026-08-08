@@ -148,6 +148,19 @@ Deno.test("lists participants", async () => {
   assertEquals(male.birthdate, "1999-01-02");
 });
 
+/**
+ * Removes a participant if a previous run left one behind, so the creation
+ * tests below can be re-run against the same database without a reset.
+ */
+async function ensureAbsent(displayName: string): Promise<void> {
+  const body = await (await call("list_participants")).json();
+  const row = body.participants.find(
+    (p: { displayName: string }) => p.displayName === displayName,
+  );
+  if (row === undefined) return;
+  await (await call("delete_participant", { id: row.id })).body?.cancel();
+}
+
 /** Looks up the seeded participants' ids for match mutations. */
 async function ids(): Promise<{ maleId: string; femaleId: string }> {
   const body = await (await call("list_participants")).json();
@@ -281,13 +294,18 @@ Deno.test("reports what a participant deletion would remove", async () => {
 });
 
 Deno.test("reports an empty impact for a participant with no match", async () => {
-  const created = await (await call("create_participant", {
+  await ensureAbsent("영향없음");
+  const res = await call("create_participant", {
     displayName: "영향없음",
     birthdate: "1995-05-05",
     gender: "M",
     contact: "",
     email: "",
-  })).json();
+  });
+  const created = await res.json();
+  // Asserted before use so a failure names the cause instead of surfacing as
+  // `undefined` two lines later.
+  assertEquals(res.status, 200, `create failed: ${JSON.stringify(created)}`);
 
   const body = await (await call("participant_impact", { id: created.id })).json();
   assertEquals(body.matches, []);
@@ -323,6 +341,7 @@ async function participantLogin(name: string, code: string): Promise<Response> {
 }
 
 Deno.test("creates a participant and the returned code works", async () => {
+  await ensureAbsent("신규남");
   const res = await call("create_participant", {
     displayName: "신규남",
     birthdate: "1998-08-08",
@@ -383,14 +402,30 @@ Deno.test("renaming updates both the lookup key and the display name", async () 
   });
   assertEquals(res.status, 200);
 
-  // The new name works, the old one does not: `name` was normalized and
-  // stored alongside `display_name`.
+  // The code still authenticates: renaming must not invalidate it.
   assertEquals((await participantLogin("표남고침", reissued.code)).status, 200);
-  assertEquals((await participantLogin("표남", reissued.code)).status, 401);
 
   const list = await (await call("list_participants")).json();
   const row = list.participants.find((p: { id: string }) => p.id === maleId);
   assertEquals(row.displayName, "표남고침");
+
+  // The normalized `name` column is not readable through any API, but
+  // import_matches upserts on (name, birthdate). Re-importing under the NEW
+  // name must update the same row rather than create a second participant --
+  // that only holds if `name` was rewritten alongside `display_name`.
+  const renamedRow = ROW_A.replace("표남,1999-01-02", "표남고침,1999-01-02");
+  const form = new FormData();
+  form.append(
+    "file",
+    new Blob([[HEADER, renamedRow].join("\n")], { type: "text/csv" }),
+    "matches.csv",
+  );
+  const reimport = await (await fetch(`${BASE}/admin-import`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${await token()}` },
+    body: form,
+  })).json();
+  assertEquals(reimport.participants.created, 0);
 });
 
 Deno.test("updating a participant leaves the code valid", async () => {
@@ -491,6 +526,62 @@ Deno.test("deletes a participant and their matches go with them", async () => {
 Deno.test("rejects a delete for an unknown participant", async () => {
   const res = await call("delete_participant", {
     id: "00000000-0000-0000-0000-000000000000",
+  });
+  assertEquals(res.status, 404);
+  assertEquals((await res.json()).error, "not_found");
+});
+
+Deno.test("regenerates a subset and leaves the rest alone", async () => {
+  // seed() re-creates 표남/표여; the rename and delete tests above left the
+  // original male row renamed and then removed.
+  await seed();
+  const femaleId = await idOf("표여");
+  const maleId = await idOf("표남");
+
+  const before = {
+    male: (await (await call("regenerate_code", { id: maleId })).json()).code,
+    female: (await (await call("regenerate_code", { id: femaleId })).json()).code,
+  };
+
+  const res = await call("regenerate_codes", { ids: [femaleId] });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.count, 1);
+  assert(body.codesCsv.startsWith("이름,성별,연락처,이메일,코드"));
+
+  // Only the listed participant was reissued.
+  assertEquals((await participantLogin("표여", before.female)).status, 401);
+  assertEquals((await participantLogin("표남", before.male)).status, 200);
+});
+
+Deno.test("regenerates everyone when no ids are given", async () => {
+  const maleId = await idOf("표남");
+  const before = (await (await call("regenerate_code", { id: maleId })).json()).code;
+  assertEquals((await participantLogin("표남", before)).status, 200);
+
+  const res = await call("regenerate_codes");
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assert(body.count >= 2, `expected everyone, got ${body.count}`);
+
+  assertEquals((await participantLogin("표남", before)).status, 401);
+
+  // The returned CSV must carry a working code for each row.
+  const lines = body.codesCsv.split("\n").filter((l: string) => l.trim() !== "");
+  const first = lines[1].split(",");
+  const code = first[first.length - 1];
+  assertEquals((await participantLogin(first[0], code)).status, 200);
+});
+
+Deno.test("rejects an empty id list", async () => {
+  const res = await call("regenerate_codes", { ids: [] });
+  assertEquals(res.status, 400);
+  assertEquals((await res.json()).error, "invalid_request");
+});
+
+Deno.test("reports not_found when no id matches", async () => {
+  const res = await call("regenerate_codes", {
+    ids: ["00000000-0000-0000-0000-000000000000"],
   });
   assertEquals(res.status, 404);
   assertEquals((await res.json()).error, "not_found");

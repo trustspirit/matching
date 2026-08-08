@@ -2,6 +2,7 @@ import { type FormEvent, useState } from "react";
 import { adminImport, ApiError, type ImportResponse } from "../../api/client";
 import { Button } from "../../design/Button";
 import { Card } from "../../design/Card";
+import { ConfirmDialog } from "../../design/ConfirmDialog";
 
 const MESSAGES: Record<string, string> = {
   unauthorized: "비밀번호가 올바르지 않습니다.",
@@ -33,26 +34,35 @@ interface CsvTabProps {
 
 export function CsvTab({ token, matchCount, onImported }: CsvTabProps) {
   const [file, setFile] = useState<File | null>(null);
-  const [regenerate, setRegenerate] = useState(false);
-  const [acknowledged, setAcknowledged] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [details, setDetails] = useState<string[]>([]);
   const [result, setResult] = useState<ImportResponse | null>(null);
 
   // The confirmation only appears once there is something to lose.
-  const needsAck = matchCount > 0;
-  const canSubmit = file !== null && (!needsAck || acknowledged);
+  const needsConfirm = matchCount > 0;
+  const canSubmit = file !== null;
 
-  async function handleSubmit(event: FormEvent) {
+  function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    if (!canSubmit || file === null || loading) return;
+    if (!canSubmit || loading) return;
+    if (needsConfirm) {
+      setConfirming(true);
+      return;
+    }
+    void upload();
+  }
+
+  async function upload() {
+    if (file === null || loading) return;
+    setConfirming(false);
     setLoading(true);
     setError(undefined);
     setDetails([]);
     setResult(null);
     try {
-      const response = await adminImport(token, file, regenerate);
+      const response = await adminImport(token, file, false);
       setResult(response);
       downloadCsv(response.codesCsv);
       onImported();
@@ -70,19 +80,31 @@ export function CsvTab({ token, matchCount, onImported }: CsvTabProps) {
 
   return (
     <>
+      {confirming && (
+        <ConfirmDialog
+          title="기존 매칭을 모두 교체합니다"
+          confirmLabel="업로드"
+          busy={loading}
+          onConfirm={() => void upload()}
+          onCancel={() => setConfirming(false)}
+          body={
+            <>
+              <p>
+                현재 <strong>{matchCount}건</strong>의 매칭이 등록되어 있습니다.
+                업로드하면 이 {matchCount}건이 전부 삭제되고 CSV 내용으로
+                교체됩니다.
+              </p>
+              <p className="mt-md text-error">
+                한 건만 고칠 때는 업로드하지 말고 매칭 탭에서 그 행을
+                수정하세요.
+              </p>
+            </>
+          }
+        />
+      )}
+
       <Card>
         <form onSubmit={handleSubmit} className="flex flex-col gap-lg">
-          {needsAck && (
-            <div className="type-body-sm rounded-md bg-surface-card px-lg py-md text-error">
-              <p className="type-body-sm-strong">
-                현재 {matchCount}건의 매칭이 등록되어 있습니다.
-              </p>
-              <p className="mt-xs">
-                업로드하면 이 {matchCount}건이 전부 삭제되고 CSV 내용으로
-                교체됩니다. 한 건만 고칠 때는 매칭 탭에서 그 행을 수정하세요.
-              </p>
-            </div>
-          )}
 
           <div className="flex flex-col gap-xs">
             <label htmlFor="csv" className="type-body-strong text-ink">
@@ -102,32 +124,7 @@ export function CsvTab({ token, matchCount, onImported }: CsvTabProps) {
             </p>
           </div>
 
-          <label className="type-body-sm flex items-start gap-sm text-body">
-            <input
-              type="checkbox"
-              checked={regenerate}
-              onChange={(event) => setRegenerate(event.target.checked)}
-              className="mt-1"
-            />
-            <span>
-              전원 코드 재발급
-              <span className="block text-error">
-                체크하면 이미 나눠준 코드가 모두 무효가 됩니다.
-              </span>
-            </span>
-          </label>
 
-          {needsAck && (
-            <label className="type-body-sm flex items-start gap-sm text-body">
-              <input
-                type="checkbox"
-                checked={acknowledged}
-                onChange={(event) => setAcknowledged(event.target.checked)}
-                className="mt-1"
-              />
-              <span>알고 있으며 진행합니다</span>
-            </label>
-          )}
 
           <Button
             type="submit"

@@ -3,6 +3,7 @@ import type { AdminParticipantRow, ImpactRow } from "@shared/types.ts";
 import { adminData, ApiError } from "../../api/client";
 import { Button } from "../../design/Button";
 import { Card } from "../../design/Card";
+import { ConfirmDialog } from "../../design/ConfirmDialog";
 import { Select } from "../../design/Select";
 import { CodeReveal } from "./CodeReveal";
 import { DeleteParticipantDialog } from "./DeleteParticipantDialog";
@@ -71,6 +72,56 @@ export function ParticipantsTab({
   const [deleting, setDeleting] = useState<Deleting | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // null = no dialog, otherwise the ids to reissue (empty array means everyone).
+  const [confirming, setConfirming] = useState<string[] | null>(null);
+  const [issuedCsv, setIssuedCsv] = useState<string | null>(null);
+
+  const allSelected = participants.length > 0 &&
+    selected.size === participants.length;
+
+  function toggle(id: string): void {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function downloadCodes(csv: string): void {
+    // Excel needs a BOM to read UTF-8 Korean without mojibake.
+    const blob = new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "참가자_코드.csv";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function reissueMany(ids: string[]): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const result = await adminData<{ count: number; codesCsv: string }>(
+        token,
+        "regenerate_codes",
+        // An empty list means "everyone"; the server rejects an explicit [].
+        ids.length === 0 ? {} : { ids },
+      );
+      setConfirming(null);
+      setSelected(new Set());
+      setIssuedCsv(result.codesCsv);
+      downloadCodes(result.codesCsv);
+      onChanged();
+    } catch (caught) {
+      report(caught);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   function report(caught: unknown): void {
     if (caught instanceof ApiError) {
@@ -229,19 +280,107 @@ export function ParticipantsTab({
 
   return (
     <Card>
-      <div className="flex flex-wrap items-baseline justify-between gap-md">
-        <p className="type-body-md text-mute">참가자 {participants.length}명</p>
-        <Button
-          type="button"
-          variant="secondary"
-          onClick={() => {
-            setDraft(BLANK);
-            setEditing("new");
-          }}
-        >
-          + 참가자 추가
-        </Button>
+      <div className="flex flex-wrap items-center gap-md">
+        <label className="type-body-sm flex items-center gap-xs text-body">
+          <input
+            type="checkbox"
+            checked={allSelected}
+            onChange={(e) =>
+              setSelected(
+                e.target.checked
+                  ? new Set(participants.map((p) => p.id))
+                  : new Set(),
+              )}
+          />
+          <span>전체 선택</span>
+        </label>
+
+        <p className="type-body-md text-mute">
+          {selected.size === 0
+            ? `참가자 ${participants.length}명`
+            : `${selected.size}명 선택 / ${participants.length}명`}
+        </p>
+
+        <div className="ml-auto flex flex-wrap gap-xs">
+          <Button
+            type="button"
+            variant="tertiary"
+            disabled={selected.size === 0}
+            onClick={() => setConfirming([...selected])}
+          >
+            선택 {selected.size}명 코드 재발급
+          </Button>
+          <Button
+            type="button"
+            variant="tertiary"
+            disabled={participants.length === 0}
+            onClick={() => setConfirming([])}
+          >
+            전원 코드 재발급
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => {
+              setDraft(BLANK);
+              setEditing("new");
+            }}
+          >
+            + 참가자 추가
+          </Button>
+        </div>
       </div>
+
+      {confirming !== null && (
+        <ConfirmDialog
+          title={confirming.length === 0
+            ? "전원 코드를 재발급합니다"
+            : `${confirming.length}명의 코드를 재발급합니다`}
+          confirmLabel="재발급"
+          busy={busy}
+          onConfirm={() => void reissueMany(confirming)}
+          onCancel={() => setConfirming(null)}
+          body={
+            <>
+              <p>
+                {confirming.length === 0
+                  ? `참가자 ${participants.length}명 전원`
+                  : `선택한 ${confirming.length}명`}
+                의 코드가 새로 발급되고,{" "}
+                <strong>이미 나눠준 코드는 즉시 무효</strong>가 됩니다.
+              </p>
+              <p className="mt-md text-error">
+                새 코드는 발급 직후 내려받는 CSV에만 있습니다. 서버에는 해시만
+                남아 다시 확인할 수 없습니다.
+              </p>
+            </>
+          }
+        />
+      )}
+
+      {issuedCsv !== null && (
+        <div className="mt-lg rounded-md border border-error bg-surface-card px-lg py-lg">
+          <p className="type-body-sm-strong text-error">
+            코드 CSV가 내려받아졌습니다. 평문 코드는 그 파일에만 있습니다.
+          </p>
+          <div className="mt-md flex flex-wrap gap-sm">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => downloadCodes(issuedCsv)}
+            >
+              다시 받기
+            </Button>
+            <Button
+              type="button"
+              variant="tertiary"
+              onClick={() => setIssuedCsv(null)}
+            >
+              닫기
+            </Button>
+          </div>
+        </div>
+      )}
 
       {error !== undefined && (
         <p role="alert" className="type-body-sm mt-md text-error">{error}</p>
@@ -278,7 +417,13 @@ export function ParticipantsTab({
               key={p.id}
               className="type-body-sm flex flex-col gap-xs border-t border-hairline py-md text-body md:flex-row md:flex-wrap md:items-center md:gap-md"
             >
-              <div className="flex gap-md md:contents">
+              <div className="flex items-center gap-md md:contents">
+                <input
+                  type="checkbox"
+                  aria-label={`${p.displayName} 선택`}
+                  checked={selected.has(p.id)}
+                  onChange={() => toggle(p.id)}
+                />
                 <span className="type-body-sm-strong text-ink md:w-24 md:font-normal">
                   {p.displayName}
                 </span>

@@ -4,11 +4,10 @@ import { isValidCode } from "@shared/code.ts";
 import { ApiError, lookup } from "../api/client";
 import { Button } from "../design/Button";
 import { CodeInput } from "../design/CodeInput";
-import { TextInput } from "../design/TextInput";
 import { saveResult } from "../lib/session";
 
 const MESSAGES: Record<string, string> = {
-  invalid_credentials: "이름 또는 코드가 올바르지 않습니다.",
+  invalid_credentials: "코드가 올바르지 않습니다.",
   too_many_attempts: "시도가 너무 많습니다. 1분 후 다시 시도해주세요.",
   invalid_request: "입력값을 확인해주세요.",
   server_error: "서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
@@ -18,12 +17,11 @@ const MESSAGES: Record<string, string> = {
 
 export function Login() {
   const navigate = useNavigate();
-  const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
 
-  const canSubmit = name.trim() !== "" && isValidCode(code);
+  const canSubmit = isValidCode(code);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -33,7 +31,7 @@ export function Login() {
     try {
       // CodeInput only ever stores allowed characters, so `code` is already
       // normalized by the time it reaches here.
-      const result = await lookup(name.trim(), code);
+      const result = await lookup(code);
       saveResult(result);
       navigate("/result");
     } catch (caught) {
@@ -57,18 +55,10 @@ export function Login() {
 
         <h1 className="type-display-lg mt-lg text-ink">매칭 결과 확인하기</h1>
         <p className="type-body-md mt-md text-mute">
-          이름과 전달받은 코드를 입력해주세요.
+          전달받은 코드를 입력해주세요.
         </p>
 
         <form onSubmit={handleSubmit} className="mt-xl flex flex-col gap-lg">
-          <TextInput
-            label="이름"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            autoComplete="name"
-            placeholder="김효준"
-            required
-          />
           <CodeInput label="코드" onChange={setCode} error={error} />
           <Button type="submit" fullWidth disabled={!canSubmit} loading={loading}>
             확인하기

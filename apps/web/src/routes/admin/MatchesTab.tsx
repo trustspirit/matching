@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type {
   AdminMatchRow,
   AdminParticipantRow,
@@ -8,6 +8,7 @@ import { adminData, ApiError } from "../../api/client";
 import { Button } from "../../design/Button";
 import { Card } from "../../design/Card";
 import { Select } from "../../design/Select";
+import { categoryColor, categoryValues } from "../../lib/categoryColor";
 import { ParticipantPicker } from "./ParticipantPicker";
 
 const MESSAGES: Record<string, string> = {
@@ -69,6 +70,27 @@ export function MatchesTab({
   const [draft, setDraft] = useState<Draft>(BLANK);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const [sessionFilter, setSessionFilter] = useState("전체");
+  const [venueFilter, setVenueFilter] = useState("전체");
+
+  // Derived from every match, never from the filtered subset: a colour has to
+  // stay with its venue even when a filter hides the others.
+  const sessions = useMemo(
+    () => categoryValues(matches.map((m) => m.session)),
+    [matches],
+  );
+  const venues = useMemo(
+    () => categoryValues(matches.map((m) => m.venue)),
+    [matches],
+  );
+  const visible = useMemo(
+    () =>
+      matches.filter((m) =>
+        (sessionFilter === "전체" || m.session === sessionFilter) &&
+        (venueFilter === "전체" || m.venue === venueFilter)
+      ),
+    [matches, sessionFilter, venueFilter],
+  );
 
   function report(caught: unknown): void {
     if (caught instanceof ApiError) {
@@ -209,18 +231,46 @@ export function MatchesTab({
 
   return (
     <Card>
-      <div className="flex items-baseline justify-between">
-        <p className="type-body-md text-mute">매칭 {matches.length}건</p>
-        <Button
-          type="button"
-          variant="secondary"
-          onClick={() => {
-            setDraft(BLANK);
-            setEditing("new");
-          }}
+      <div className="flex flex-wrap items-end gap-md">
+        <Select
+          compact
+          label="부"
+          value={sessionFilter}
+          onChange={(e) => setSessionFilter(e.target.value)}
+          className="w-28"
         >
-          + 매칭 추가
-        </Button>
+          <option value="전체">전체</option>
+          {sessions.map((v) => <option key={v} value={v}>{v}</option>)}
+        </Select>
+        <Select
+          compact
+          label="장소"
+          value={venueFilter}
+          onChange={(e) => setVenueFilter(e.target.value)}
+          className="w-36"
+        >
+          <option value="전체">전체</option>
+          {venues.map((v) => <option key={v} value={v}>{v}</option>)}
+        </Select>
+
+        <p className="type-body-md text-mute">
+          {visible.length === matches.length
+            ? `매칭 ${matches.length}건`
+            : `매칭 ${visible.length} / ${matches.length}건`}
+        </p>
+
+        <div className="ml-auto">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => {
+              setDraft(BLANK);
+              setEditing("new");
+            }}
+          >
+            + 매칭 추가
+          </Button>
+        </div>
       </div>
 
       {error !== undefined && (
@@ -229,8 +279,19 @@ export function MatchesTab({
 
       {editing === "new" && editor("new")}
 
-      <div className="mt-lg flex flex-col">
-        {matches.map((row) =>
+      {/* Column headers only make sense in the wide table layout; the narrow
+          layout stacks each row into a self-labelling card. */}
+      <div className="type-caption-md mt-lg hidden border-b border-hairline pb-xs text-mute md:flex md:gap-md">
+        <span className="w-16">부</span>
+        <span className="w-16">조</span>
+        <span className="w-32">시간</span>
+        <span className="w-24">장소</span>
+        <span className="w-24">남성</span>
+        <span className="w-24">여성</span>
+      </div>
+
+      <div className="flex flex-col">
+        {visible.map((row) =>
           editing === row.id ? editor(row.id) : (
             // Stacked card on a phone, single table row from md up. The inner
             // wrappers group related fields while stacked; `md:contents` makes
@@ -240,15 +301,33 @@ export function MatchesTab({
               key={row.id}
               className="type-body-sm flex flex-col gap-xs border-t border-hairline py-md text-body md:flex-row md:flex-wrap md:items-center md:gap-md"
             >
-              <div className="flex gap-md md:contents">
-                <span className="type-body-sm-strong text-ink md:w-10 md:font-normal">
-                  {row.session}
+              <div className="flex items-center gap-md md:contents">
+                <span className="md:w-16">
+                  <span
+                    className="type-caption-md rounded-sm px-xs py-xxs"
+                    style={{
+                      backgroundColor: categoryColor(row.session, sessions).bg,
+                      color: categoryColor(row.session, sessions).fg,
+                    }}
+                  >
+                    {row.session}
+                  </span>
                 </span>
                 <span className="text-ink md:w-16">{row.team ?? "미정"}</span>
               </div>
-              <div className="flex gap-md md:contents">
+              <div className="flex items-center gap-md md:contents">
                 <span className="md:w-32">{row.timeRange}</span>
-                <span className="md:w-24">{row.venue}</span>
+                <span className="md:w-24">
+                  <span
+                    className="type-caption-md rounded-sm px-xs py-xxs"
+                    style={{
+                      backgroundColor: categoryColor(row.venue, venues, sessions.length).bg,
+                      color: categoryColor(row.venue, venues, sessions.length).fg,
+                    }}
+                  >
+                    {row.venue}
+                  </span>
+                </span>
               </div>
               <div className="flex gap-xs md:contents">
                 <span className="text-ink md:w-24">{row.maleName}</span>

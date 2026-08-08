@@ -10,7 +10,6 @@ import {
   recordAttempt,
 } from "../_shared/rateLimit.ts";
 import { isValidCode, normalizeCode } from "../_shared/lib/code.ts";
-import { normalizeName } from "../_shared/lib/name.ts";
 import type { LookupResponse, MatchView } from "../_shared/lib/types.ts";
 
 interface ParticipantRow {
@@ -42,10 +41,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return jsonResponse(req, { error: "invalid_request" }, 400);
   }
 
-  const body = payload as { name?: unknown; code?: unknown };
-  const rawName = typeof body.name === "string" ? body.name : "";
+  const body = payload as { code?: unknown };
   const rawCode = typeof body.code === "string" ? body.code : "";
-  if (rawName.trim() === "" || !isValidCode(rawCode)) {
+  if (!isValidCode(rawCode)) {
     return jsonResponse(req, { error: "invalid_request" }, 400);
   }
 
@@ -61,13 +59,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return jsonResponse(req, { error: "too_many_attempts", retryAfter: 60 }, 429);
   }
 
-  const name = normalizeName(rawName);
   const code = normalizeCode(rawCode);
 
+  // Every participant is a candidate: the per-row salt means a code cannot be
+  // looked up by hash, so the only way to find its owner is to hash the input
+  // against each stored salt. At ~350 participants that is ~350 SHA-256 per
+  // login, which is microseconds. import_matches guarantees the codes are
+  // unique, so at most one row can match.
   const { data: candidates, error: candidatesError } = await db
     .from("participants")
     .select("id, display_name, code_salt, code_hash")
-    .eq("name", name)
     .returns<ParticipantRow[]>();
 
   if (candidatesError) {
@@ -81,10 +82,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
   let matched: ParticipantRow | null = null;
   for (const candidate of candidates ?? []) {
     const digest = await hashCode(candidate.code_salt, code);
-    if (timingSafeEqual(digest, candidate.code_hash)) {
-      matched = candidate;
-      break;
-    }
+    // No early break: hashing every row keeps the response time independent of
+    // where in the table the match sits.
+    if (timingSafeEqual(digest, candidate.code_hash)) matched = candidate;
   }
 
   if (matched === null) {

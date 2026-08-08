@@ -1,8 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { handlePreflight, jsonResponse } from "../_shared/cors.ts";
 import { createServiceClient } from "../_shared/db.ts";
-import { hashCode, randomSalt, timingSafeEqual } from "../_shared/hash.ts";
-import { generateCode } from "../_shared/lib/code.ts";
+import { timingSafeEqual } from "../_shared/hash.ts";
+import { mintUniqueCode, type TakenCode } from "../_shared/mintCode.ts";
+import { buildCodesCsv } from "../_shared/lib/csv.ts";
 import { normalizeName } from "../_shared/lib/name.ts";
 import {
   bearerToken,
@@ -21,6 +22,7 @@ import {
 import type {
   AdminMatchRow,
   AdminParticipantRow,
+  CodeRow,
   ImpactRow,
   Session,
 } from "../_shared/lib/types.ts";
@@ -134,6 +136,23 @@ async function participantImpact(
     team: r.team,
     partnerName: r.partner_name,
   }));
+}
+
+/**
+ * Every code currently in use. Needed because a per-row salt makes it
+ * impossible to test a candidate code without hashing it against each stored
+ * salt, and a code alone now identifies a participant.
+ */
+async function takenCodes(db: SupabaseClient): Promise<TakenCode[] | null> {
+  const { data, error } = await db
+    .from("participants")
+    .select("code_salt, code_hash")
+    .returns<{ code_salt: string; code_hash: string }[]>();
+  if (error) {
+    console.error("taken code lookup failed", error);
+    return null;
+  }
+  return (data ?? []).map((r) => ({ salt: r.code_salt, hash: r.code_hash }));
 }
 
 interface ParticipantInput {
@@ -368,9 +387,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
     const input = readParticipantInput(payload);
     if (input === null) return jsonResponse(req, { error: "invalid_request" }, 400);
 
-    const code = generateCode();
-    const salt = randomSalt();
-    const hash = await hashCode(salt, code);
+    const taken = await takenCodes(db);
+    if (taken === null) return jsonResponse(req, { error: "server_error" }, 500);
+    const { code, salt, hash } = await mintUniqueCode(taken);
 
     const { data, error } = await db
       .from("participants")
@@ -457,15 +476,88 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return jsonResponse(req, { ok: true });
   }
 
+  if (action === "regenerate_codes") {
+    // No ids means everyone. A subset keeps the untouched participants' codes
+    // valid, so those codes stay in the uniqueness guard below.
+    const rawIds = (payload as { ids?: unknown }).ids;
+    const ids = Array.isArray(rawIds)
+      ? rawIds.filter((v): v is string => typeof v === "string" && v !== "")
+      : null;
+    if (ids !== null && ids.length === 0) {
+      return jsonResponse(req, { error: "invalid_request" }, 400);
+    }
+
+    const { data, error } = await db
+      .from("participants")
+      .select("id, display_name, gender, contact, email, code_salt, code_hash")
+      .order("display_name")
+      .returns<
+        {
+          id: string;
+          display_name: string;
+          gender: string;
+          contact: string | null;
+          email: string | null;
+          code_salt: string;
+          code_hash: string;
+        }[]
+      >();
+    if (error) {
+      console.error("regenerate_codes listing failed", error);
+      return jsonResponse(req, { error: "server_error" }, 500);
+    }
+
+    const all = data ?? [];
+    const targets = ids === null ? all : all.filter((p) => ids.includes(p.id));
+    if (targets.length === 0) {
+      return jsonResponse(req, { error: "not_found" }, 404);
+    }
+
+    // Participants who keep their code must stay in the guard: a new code must
+    // not collide with one that is still in circulation.
+    const targetIds = new Set(targets.map((p) => p.id));
+    const taken: TakenCode[] = all
+      .filter((p) => !targetIds.has(p.id))
+      .map((p) => ({ salt: p.code_salt, hash: p.code_hash }));
+    const rows: CodeRow[] = [];
+
+    for (const p of targets) {
+      const minted = await mintUniqueCode(taken);
+      taken.push({ salt: minted.salt, hash: minted.hash });
+
+      const { error: writeError } = await db
+        .from("participants")
+        .update({ code_salt: minted.salt, code_hash: minted.hash })
+        .eq("id", p.id);
+      if (writeError) {
+        // Stop rather than continue: a partial pass would leave some codes
+        // replaced and some not, with no record of which.
+        console.error("regenerate_codes write failed", writeError);
+        return jsonResponse(req, { error: "server_error" }, 500);
+      }
+
+      rows.push({
+        displayName: p.display_name,
+        gender: p.gender as "M" | "F",
+        contact: p.contact,
+        email: p.email,
+        code: minted.code,
+      });
+    }
+
+    // The plaintext exists only in this response; the table keeps hashes.
+    return jsonResponse(req, { count: rows.length, codesCsv: buildCodesCsv(rows) });
+  }
+
   if (action === "regenerate_code") {
     const id = (payload as { id?: unknown }).id;
     if (typeof id !== "string" || id === "") {
       return jsonResponse(req, { error: "invalid_request" }, 400);
     }
 
-    const code = generateCode();
-    const salt = randomSalt();
-    const hash = await hashCode(salt, code);
+    const taken = await takenCodes(db);
+    if (taken === null) return jsonResponse(req, { error: "server_error" }, 500);
+    const { code, salt, hash } = await mintUniqueCode(taken);
 
     const { data, error } = await db
       .from("participants")
