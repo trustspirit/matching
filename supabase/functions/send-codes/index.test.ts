@@ -69,3 +69,86 @@ Deno.test("a run does nothing while disarmed", async () => {
   assertEquals(res.status, 200);
   assertEquals((await res.json()).outcome, "disarmed");
 });
+
+/**
+ * Runs SQL through the psql inside the database container. The host has no
+ * psql installed, and the tests need no database client of their own.
+ */
+async function sql(statement: string): Promise<string> {
+  const command = new Deno.Command("docker", {
+    args: [
+      "exec",
+      "supabase_db_blind-date-match",
+      "psql",
+      "-U",
+      "postgres",
+      "-d",
+      "postgres",
+      "-tAc",
+      statement,
+    ],
+    stdout: "piped",
+    stderr: "piped",
+  });
+  const { code, stdout, stderr } = await command.output();
+  if (code !== 0) throw new Error(new TextDecoder().decode(stderr));
+  return new TextDecoder().decode(stdout).trim();
+}
+
+async function seed(count: number): Promise<void> {
+  await sql("delete from participants;");
+  for (let i = 0; i < count; i++) {
+    await sql(
+      `insert into participants (name, display_name, birthdate, gender, email, code_salt, code_hash)
+       values ('사람${i}', '사람${i}', '1990-01-01', 'M', 'p${i}@example.com', 's${i}', 'h${i}');`,
+    );
+  }
+}
+
+/**
+ * Stands in for Brevo. The function container reads BREVO_API_URL per request,
+ * so the port stays fixed and only the behaviour changes per test. `n` is the
+ * zero-based call index, which is how a test makes the third message fail.
+ */
+async function withBrevo(
+  handler: (req: Request, n: number) => Response | Promise<Response>,
+  body: () => Promise<void>,
+): Promise<void> {
+  let n = 0;
+  const controller = new AbortController();
+  const server = Deno.serve(
+    { port: 8799, signal: controller.signal, onListen: () => {} },
+    (req) => handler(req, n++),
+  );
+  try {
+    await body();
+  } finally {
+    controller.abort();
+    await server.finished;
+  }
+}
+
+Deno.test("a run mails every pending participant and stamps them", async () => {
+  await seed(3);
+  await (await call("arm")).body?.cancel();
+
+  await withBrevo(
+    () => new Response("{}", { status: 201 }),
+    async () => {
+      const body = await (await call("run")).json();
+      assertEquals(body.outcome, "done");
+      assertEquals(body.sent, 3);
+      assertEquals(body.failed, 0);
+    },
+  );
+
+  assertEquals(await sql("select count(*) from participants where code_sent_at is null;"), "0");
+  assertEquals(await sql("select count(*) from participants where send_claim_id is not null;"), "0");
+  // Codes are per-row salted, so uniqueness cannot be a constraint. Prove it.
+  assertEquals(await sql("select count(distinct code_hash) from participants;"), "3");
+});
+
+Deno.test("finishing the queue disarms so the next import is safe", async () => {
+  const res = await call("status");
+  assertEquals((await res.json()).armed, false);
+});
