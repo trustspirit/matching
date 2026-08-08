@@ -4,7 +4,7 @@ import { createServiceClient } from "../_shared/db.ts";
 import { timingSafeEqual } from "../_shared/hash.ts";
 import { mintUniqueCode, type TakenCode } from "../_shared/mintCode.ts";
 import { buildCodesCsv } from "../_shared/lib/csv.ts";
-import { emailEnabled, sendCodeEmail } from "../_shared/sendEmail.ts";
+import { sendCodeEmail } from "../_shared/sendEmail.ts";
 import { normalizeName } from "../_shared/lib/name.ts";
 import {
   bearerToken,
@@ -539,6 +539,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
         gender: input.gender,
         contact: input.contact,
         email: input.email,
+        // The admin editing this row is the explicit signal that the address
+        // is worth trying again.
+        send_attempts: 0,
+        send_last_error: null,
       })
       .eq("id", id)
       .select("id");
@@ -577,12 +581,6 @@ Deno.serve(async (req: Request): Promise<Response> => {
       return jsonResponse(req, { error: "not_found" }, 404);
     }
     return jsonResponse(req, { ok: true });
-  }
-
-  if (action === "email_status") {
-    // Lets the screen hide the send button instead of offering an action that
-    // can only fail.
-    return jsonResponse(req, { enabled: emailEnabled() });
   }
 
   if (action === "send_code") {
@@ -631,84 +629,6 @@ Deno.serve(async (req: Request): Promise<Response> => {
       console.error("send_code stamp failed", stampError);
     }
     return jsonResponse(req, { ok: true, email: data.email });
-  }
-
-  // Issues a fresh code to everyone who has an email address but has never been
-  // sent one, and mails it. Re-sending an existing code is impossible -- only
-  // its hash is stored -- so minting is the only way to put a code in someone's
-  // inbox. That is safe here precisely because the target set is people who
-  // never received the code they currently hold.
-  if (action === "send_pending_codes") {
-    if (!emailEnabled()) {
-      return jsonResponse(req, { error: "email_disabled" }, 400);
-    }
-
-    const { data, error } = await db
-      .from("participants")
-      .select("id, display_name, email, code_salt, code_hash, code_sent_at")
-      .order("display_name")
-      .returns<
-        {
-          id: string;
-          display_name: string;
-          email: string | null;
-          code_salt: string;
-          code_hash: string;
-          code_sent_at: string | null;
-        }[]
-      >();
-    if (error) {
-      console.error("send_pending_codes listing failed", error);
-      return jsonResponse(req, { error: "server_error" }, 500);
-    }
-
-    const all = data ?? [];
-    const targets = all.filter((p) =>
-      p.email !== null && p.email !== "" && p.code_sent_at === null
-    );
-    if (targets.length === 0) return jsonResponse(req, { sent: 0, failed: 0 });
-
-    const targetIds = new Set(targets.map((p) => p.id));
-    const taken: TakenCode[] = all
-      .filter((p) => !targetIds.has(p.id))
-      .map((p) => ({ salt: p.code_salt, hash: p.code_hash }));
-
-    let sent = 0;
-    let failed = 0;
-    for (const p of targets) {
-      const minted = await mintUniqueCode(taken);
-      taken.push({ salt: minted.salt, hash: minted.hash });
-
-      const { error: writeError } = await db
-        .from("participants")
-        .update({ code_salt: minted.salt, code_hash: minted.hash })
-        .eq("id", p.id);
-      if (writeError) {
-        console.error("send_pending_codes write failed", writeError);
-        failed++;
-        continue;
-      }
-
-      const result = await sendCodeEmail(p.email!, p.display_name, minted.code);
-      if (result.kind !== "sent") {
-        // The code changed but the mail did not go out. code_sent_at stays
-        // null, so this participant is still pending and the next run gives
-        // them another code and another attempt.
-        failed++;
-        continue;
-      }
-
-      const { error: stampError } = await db
-        .from("participants")
-        .update({ code_sent_at: new Date().toISOString() })
-        .eq("id", p.id);
-      if (stampError) console.error("send_pending_codes stamp failed", stampError);
-      sent++;
-    }
-
-    // Partial results are reported as they happened. Rolling back on failure
-    // would be a lie: the messages that went out cannot be recalled.
-    return jsonResponse(req, { sent, failed });
   }
 
   if (action === "regenerate_codes") {
@@ -768,6 +688,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
           code_salt: minted.salt,
           code_hash: minted.hash,
           code_sent_at: null,
+          send_attempts: 0,
+          send_last_error: null,
+          // A new code invalidates any send that claimed the old one.
+          send_claim_id: null,
+          send_claimed_at: null,
         })
         .eq("id", p.id);
       if (writeError) {
@@ -802,7 +727,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
     const { data, error } = await db
       .from("participants")
-      .update({ code_salt: salt, code_hash: hash, code_sent_at: null })
+      .update({
+        code_salt: salt,
+        code_hash: hash,
+        code_sent_at: null,
+        send_attempts: 0,
+        send_last_error: null,
+        // A new code invalidates any send that claimed the old one.
+        send_claim_id: null,
+        send_claimed_at: null,
+      })
       .eq("id", id)
       .select("id");
 

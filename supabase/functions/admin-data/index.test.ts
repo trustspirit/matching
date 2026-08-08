@@ -331,6 +331,31 @@ async function idOf(displayName: string): Promise<string> {
   return row.id;
 }
 
+/**
+ * Runs SQL through the psql inside the database container. The host has no
+ * psql installed, and the tests need no database client of their own.
+ */
+async function sql(statement: string): Promise<string> {
+  const command = new Deno.Command("docker", {
+    args: [
+      "exec",
+      "supabase_db_blind-date-match",
+      "psql",
+      "-U",
+      "postgres",
+      "-d",
+      "postgres",
+      "-tAc",
+      statement,
+    ],
+    stdout: "piped",
+    stderr: "piped",
+  });
+  const { code, stdout, stderr } = await command.output();
+  if (code !== 0) throw new Error(new TextDecoder().decode(stderr));
+  return new TextDecoder().decode(stdout).trim();
+}
+
 /** Logs in as a participant to prove a code works. */
 async function participantLogin(name: string, code: string): Promise<Response> {
   return await fetch(`${BASE}/lookup`, {
@@ -500,6 +525,30 @@ Deno.test("rejects regenerate_code for an unknown participant", async () => {
   assertEquals((await res.json()).error, "not_found");
 });
 
+Deno.test("reissuing a code clears the failure ceiling", async () => {
+  // A participant parked at the ceiling is invisible to the sender. The admin
+  // fixing their address or reissuing their code is the only way back in, so
+  // that action has to reset the counter.
+  const id = await sql(
+    "select id from participants order by display_name limit 1;",
+  );
+  await sql(`update participants set send_attempts = 5, send_last_error = 'x' where id = '${id}';`);
+
+  const res = await fetch(`${BASE}/admin-data`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${await token()}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ action: "regenerate_code", id }),
+  });
+  assertEquals(res.status, 200);
+  await res.body?.cancel();
+
+  assertEquals(await sql(`select send_attempts from participants where id = '${id}';`), "0");
+  assertEquals(await sql(`select send_last_error is null from participants where id = '${id}';`), "t");
+});
+
 Deno.test("deletes a participant and their matches go with them", async () => {
   const maleId = await idOf("표남고침");
   const before = await (await call("list_matches")).json();
@@ -587,15 +636,6 @@ Deno.test("reports not_found when no id matches", async () => {
   assertEquals((await res.json()).error, "not_found");
 });
 
-Deno.test("reports whether email is configured", async () => {
-  const res = await call("email_status");
-  assertEquals(res.status, 200);
-  const body = await res.json();
-  // Locally BREVO_API_KEY is unset, so the feature reports itself off rather
-  // than offering a button that can only fail.
-  assertEquals(typeof body.enabled, "boolean");
-});
-
 Deno.test("send_code rejects a request without a code", async () => {
   const id = await idOf("표여");
   const res = await call("send_code", { id });
@@ -627,19 +667,4 @@ Deno.test("send_code refuses a participant with no email", async () => {
   // Checked before the provider is called: no point spending a send on an
   // address that does not exist.
   assertEquals((await res.json()).error, "no_email");
-});
-
-Deno.test("send_code reports the feature as off when unconfigured", async () => {
-  const status = await (await call("email_status")).json();
-  const id = await idOf("표여");
-
-  const res = await call("send_code", { id, code: "ABCDEF" });
-  if (status.enabled) {
-    // With a real key configured this would attempt a send; the local suite
-    // runs without one, so only assert the disabled path here.
-    await res.body?.cancel();
-    return;
-  }
-  assertEquals(res.status, 400);
-  assertEquals((await res.json()).error, "email_disabled");
 });
