@@ -1,30 +1,49 @@
 배포 절차
 =========
 
-1) Supabase 프로젝트 배포
-   PROJECT_REF=<project-ref> \
-   ADMIN_PASSWORD='<강한 비밀번호>' \
-   SITE_ORIGIN='https://<project>.pages.dev,http://localhost:5173' \
-     ./scripts/deploy.sh
+1) Supabase 배포 (자동)
 
-   이 스크립트가 link → db push → secrets set → functions deploy →
-   스모크 테스트를 순서대로 실행한다. 한 단계라도 실패하면 즉시 멈춘다.
-   무엇을 실행할지만 보려면 --dry-run을 붙인다.
+   main 브랜치의 supabase/** 또는 scripts/deploy.sh 가 바뀌면 GitHub
+   Actions가 알아서 배포한다. 시크릿만 바꿨을 때처럼 파일 변경이 없으면
+   Actions 탭에서 "Deploy Supabase"를 수동 실행한다.
+
+   프론트엔드는 Cloudflare Pages가 따로 배포하므로 이 워크플로는 서버만
+   건드린다.
+
+   저장소 Settings → Secrets and variables → Actions 에 넣어야 하는 값:
+
+     SUPABASE_ACCESS_TOKEN   supabase.com/dashboard/account/tokens 에서 발급
+     SUPABASE_DB_PASSWORD    프로젝트 DB 비밀번호. link가 묻지 않게 한다
+     SUPABASE_PROJECT_REF    대시보드 URL의 project/<여기>
+     ADMIN_PASSWORD          /admin 로그인 비밀번호
+     SITE_ORIGIN             https://<사이트>,http://localhost:5173
+     SUPABASE_ANON_KEY       (선택) 있으면 RLS 점검까지 수행
+
+   코드 이메일 발송을 쓰려면 추가로:
+
+     BREVO_API_KEY           Brevo API 키
+     BREVO_SENDER_EMAIL      Brevo에 인증된 발신 주소
+     BREVO_SENDER_NAME       받는 사람에게 보이는 이름
+     EVENT_CONTACT           본문에 넣을 문의처
+
+   넷 중 앞의 둘이 없으면 이메일 기능만 꺼진 채 배포된다.
+
+   손으로 배포할 때 (CI가 막혔거나 급할 때):
+
+     PROJECT_REF=<ref> ADMIN_PASSWORD='...' SITE_ORIGIN='...' \
+       ./scripts/deploy.sh
+
+   워크플로와 같은 스크립트를 부르므로 절차와 스모크 테스트가 동일하다.
+   --dry-run을 붙이면 실행할 명령만 출력한다.
 
    - IP 해시 salt는 db push가 자동 생성하므로 따로 설정하지 않는다.
    - SUPABASE_URL과 SUPABASE_SERVICE_ROLE_KEY는 런타임이 자동 주입한다.
-   - supabase link는 DB 비밀번호를 대화형으로 묻는다. 비대화형으로
-     실행하려면 SUPABASE_DB_PASSWORD를 환경에 넣어둔다.
-   - ANON_KEY를 함께 넘기면 RLS 점검까지 수행한다.
-   - 코드를 이메일로 보내려면 BREVO_API_KEY와 BREVO_SENDER_EMAIL을 함께
-     넘긴다. 없으면 그 기능만 꺼지고 나머지는 그대로 동작한다.
-   - 시크릿을 바꾸면 반드시 함수를 다시 배포해야 반영된다. 스크립트를
-     다시 실행하면 그 순서가 지켜진다.
+   - 시크릿을 바꾸면 함수를 다시 배포해야 반영된다. 워크플로를 수동
+     실행하면 그 순서가 지켜진다.
 
-   SITE_ORIGIN 닭-달걀: pages.dev 도메인은 Pages를 한 번 배포해야
-   생긴다. 최초에는 SITE_ORIGIN='http://localhost:5173'으로 실행하고,
-   2)에서 도메인이 생긴 뒤 실제 도메인을 넣어 다시 실행한다. 스크립트가
-   멱등하므로 재실행 비용은 없다.
+   SITE_ORIGIN 닭-달걀: pages.dev 도메인은 Pages를 한 번 배포해야 생긴다.
+   최초에는 http://localhost:5173 으로 두고, 2)에서 도메인이 생긴 뒤 시크릿을
+   고쳐 워크플로를 수동 실행한다.
 
 2) Cloudflare Pages 설정
    Cloudflare가 Pages를 Workers로 통합하는 중이라 Create 화면이 Workers로
