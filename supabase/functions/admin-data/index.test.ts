@@ -8,6 +8,28 @@ const HEADER =
 const ROW_A =
   "1부,,소극장,3조,표남,1999-01-02,010-0000-0001,a@example.com,표여,1999-05-06,010-0000-0002,b@example.com";
 
+/** Logs in once and caches the token for the rest of the file. */
+let sessionToken = "";
+
+async function login(password = PASSWORD): Promise<Response> {
+  return await fetch(`${BASE}/admin-data`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${password}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ action: "login" }),
+  });
+}
+
+async function token(): Promise<string> {
+  if (sessionToken !== "") return sessionToken;
+  const res = await login();
+  assertEquals(res.status, 200);
+  sessionToken = (await res.json()).token;
+  return sessionToken;
+}
+
 /** Seeds one match so the listing tests have something to read. */
 async function seed(): Promise<void> {
   const form = new FormData();
@@ -18,7 +40,7 @@ async function seed(): Promise<void> {
   );
   const res = await fetch(`${BASE}/admin-import`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${PASSWORD}` },
+    headers: { Authorization: `Bearer ${await token()}` },
     body: form,
   });
   assertEquals(res.status, 200);
@@ -28,12 +50,12 @@ async function seed(): Promise<void> {
 async function call(
   action: string,
   params: Record<string, unknown> = {},
-  password = PASSWORD,
+  credential?: string,
 ): Promise<Response> {
   return await fetch(`${BASE}/admin-data`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${password}`,
+      Authorization: `Bearer ${credential ?? await token()}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ action, ...params }),
@@ -50,10 +72,45 @@ Deno.test("rejects a request with no credentials", async () => {
   await res.body?.cancel();
 });
 
-Deno.test("rejects a wrong password", async () => {
-  const res = await call("list_matches", {}, "nope");
+Deno.test("login rejects a wrong password", async () => {
+  const res = await login("definitely-wrong");
   assertEquals(res.status, 401);
   assertEquals((await res.json()).error, "unauthorized");
+});
+
+Deno.test("the password does not work on a normal action", async () => {
+  // Only `login` accepts the password; everything else needs a token.
+  const res = await call("list_matches", {}, PASSWORD);
+  assertEquals(res.status, 401);
+  await res.body?.cancel();
+});
+
+Deno.test("an unknown token is rejected", async () => {
+  const res = await call("list_matches", {}, "0".repeat(64));
+  assertEquals(res.status, 401);
+  await res.body?.cancel();
+});
+
+Deno.test("logout invalidates the token it was called with", async () => {
+  const fresh = await (await login()).json();
+  assert(typeof fresh.token === "string" && fresh.token.length === 64);
+  assertEquals((await call("list_matches", {}, fresh.token)).status, 200);
+
+  const out = await call("logout", {}, fresh.token);
+  assertEquals(out.status, 200);
+  await out.body?.cancel();
+
+  assertEquals((await call("list_matches", {}, fresh.token)).status, 401);
+});
+
+Deno.test("logging out one session leaves another alone", async () => {
+  const a = await (await login()).json();
+  const b = await (await login()).json();
+
+  await (await call("logout", {}, a.token)).body?.cancel();
+
+  assertEquals((await call("list_matches", {}, a.token)).status, 401);
+  assertEquals((await call("list_matches", {}, b.token)).status, 200);
 });
 
 Deno.test("rejects an unknown action", async () => {
@@ -257,7 +314,7 @@ async function idOf(displayName: string): Promise<string> {
 }
 
 /** Logs in as a participant to prove a code works. */
-async function login(name: string, code: string): Promise<Response> {
+async function participantLogin(name: string, code: string): Promise<Response> {
   return await fetch(`${BASE}/lookup`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -279,7 +336,7 @@ Deno.test("creates a participant and the returned code works", async () => {
   assert(typeof body.code === "string" && body.code.length === 6);
 
   // A brand-new participant has no match yet, but the code must authenticate.
-  const ok = await login("신규남", body.code);
+  const ok = await participantLogin("신규남", body.code);
   assertEquals(ok.status, 200);
   assertEquals((await ok.json()).matches, []);
 });
@@ -314,7 +371,7 @@ Deno.test("renaming updates both the lookup key and the display name", async () 
 
   // Capture a working code first: renaming must not invalidate it.
   const reissued = await (await call("regenerate_code", { id: maleId })).json();
-  assertEquals((await login("표남", reissued.code)).status, 200);
+  assertEquals((await participantLogin("표남", reissued.code)).status, 200);
 
   const res = await call("update_participant", {
     id: maleId,
@@ -328,8 +385,8 @@ Deno.test("renaming updates both the lookup key and the display name", async () 
 
   // The new name works, the old one does not: `name` was normalized and
   // stored alongside `display_name`.
-  assertEquals((await login("표남고침", reissued.code)).status, 200);
-  assertEquals((await login("표남", reissued.code)).status, 401);
+  assertEquals((await participantLogin("표남고침", reissued.code)).status, 200);
+  assertEquals((await participantLogin("표남", reissued.code)).status, 401);
 
   const list = await (await call("list_participants")).json();
   const row = list.participants.find((p: { id: string }) => p.id === maleId);
@@ -351,7 +408,7 @@ Deno.test("updating a participant leaves the code valid", async () => {
   await res.body?.cancel();
 
   // update_participant must not touch code_salt/code_hash.
-  assertEquals((await login("표남고침", reissued.code)).status, 200);
+  assertEquals((await participantLogin("표남고침", reissued.code)).status, 200);
 });
 
 Deno.test("rejects a rename that collides with another participant", async () => {
@@ -378,14 +435,14 @@ Deno.test("regenerating a code invalidates the old one", async () => {
 
   const first = await (await call("regenerate_code", { id: femaleId })).json();
   assert(typeof first.code === "string" && first.code.length === 6);
-  assertEquals((await login("표여", first.code)).status, 200);
+  assertEquals((await participantLogin("표여", first.code)).status, 200);
 
   const second = await (await call("regenerate_code", { id: femaleId })).json();
   assert(second.code !== first.code);
 
   // Only the newest code authenticates; the server never kept the old one.
-  assertEquals((await login("표여", first.code)).status, 401);
-  assertEquals((await login("표여", second.code)).status, 200);
+  assertEquals((await participantLogin("표여", first.code)).status, 401);
+  assertEquals((await participantLogin("표여", second.code)).status, 200);
 });
 
 Deno.test("regenerating one code leaves everyone else alone", async () => {
@@ -395,9 +452,9 @@ Deno.test("regenerating one code leaves everyone else alone", async () => {
   const female = await (await call("regenerate_code", { id: femaleId })).json();
 
   const maleAgain = await (await call("regenerate_code", { id: maleId })).json();
-  assertEquals((await login("표남고침", male.code)).status, 401);
-  assertEquals((await login("표남고침", maleAgain.code)).status, 200);
-  assertEquals((await login("표여", female.code)).status, 200);
+  assertEquals((await participantLogin("표남고침", male.code)).status, 401);
+  assertEquals((await participantLogin("표남고침", maleAgain.code)).status, 200);
+  assertEquals((await participantLogin("표여", female.code)).status, 200);
 });
 
 Deno.test("rejects regenerate_code for an unknown participant", async () => {

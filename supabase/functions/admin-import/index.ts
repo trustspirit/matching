@@ -6,9 +6,9 @@ import {
   getIpSalt,
   hashIp,
   isRateLimited,
-  recordAttempt,
 } from "../_shared/rateLimit.ts";
-import { hashCode, randomSalt, timingSafeEqual } from "../_shared/hash.ts";
+import { hashCode, randomSalt } from "../_shared/hash.ts";
+import { bearerToken, verifySession } from "../_shared/session.ts";
 import { generateCode } from "../_shared/lib/code.ts";
 import { buildCodesCsv, parseMatchCsv } from "../_shared/lib/csv.ts";
 import type { CodeRow, ParsedPerson } from "../_shared/lib/types.ts";
@@ -16,14 +16,6 @@ import type { CodeRow, ParsedPerson } from "../_shared/lib/types.ts";
 /** Identity key for a participant, matching the DB's unique constraint. */
 function personKey(person: ParsedPerson): string {
   return `${person.name}|${person.birthdate}`;
-}
-
-function isAuthorized(req: Request): boolean {
-  const expected = Deno.env.get("ADMIN_PASSWORD") ?? "";
-  const header = req.headers.get("Authorization") ?? "";
-  const provided = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (expected === "" || provided === "") return false;
-  return timingSafeEqual(provided, expected);
 }
 
 Deno.serve(async (req: Request): Promise<Response> => {
@@ -44,13 +36,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
     );
   }
 
-  // Rate limiting keys on authentication failure, not on request shape.
-  // Counting only verifyOnly requests would let an attacker bypass the limit
-  // by attaching a dummy file to every guess.
-  if (!isAuthorized(req)) {
-    if (ipHash !== null) {
-      await recordAttempt(db, ipHash, false, ADMIN_POLICY);
-    }
+  // The password never reaches this function any more: admin-data's `login`
+  // exchanges it for a token, and failed password guesses are counted there.
+  // The rate limit check above stays so a locked-out admin cannot upload
+  // either.
+  if (!await verifySession(db, bearerToken(req))) {
     return jsonResponse(req, { error: "unauthorized" }, 401);
   }
 
@@ -59,12 +49,6 @@ Deno.serve(async (req: Request): Promise<Response> => {
     form = await req.formData();
   } catch {
     return jsonResponse(req, { error: "invalid_request" }, 400);
-  }
-
-  // Gate check from the /admin entry screen: authentication already passed, so
-  // answer without touching the CSV path or the database.
-  if (form.get("verifyOnly") === "true") {
-    return jsonResponse(req, { ok: true });
   }
 
   const file = form.get("file");

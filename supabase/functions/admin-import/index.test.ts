@@ -6,6 +6,24 @@ const PASSWORD = Deno.env.get("ADMIN_PASSWORD") ?? "local-admin";
 const HEADER =
   "부,시간,장소,조,남성 이름,남성 생년월일,남성 연락처,남성 이메일,여성 이름,여성 생년월일,여성 연락처,여성 이메일";
 
+let sessionToken = "";
+
+/** admin-import now takes a session token; admin-data's `login` mints it. */
+async function token(): Promise<string> {
+  if (sessionToken !== "") return sessionToken;
+  const res = await fetch(`${BASE}/admin-data`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${PASSWORD}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ action: "login" }),
+  });
+  assertEquals(res.status, 200);
+  sessionToken = (await res.json()).token;
+  return sessionToken;
+}
+
 function csv(...rows: string[]): string {
   return [HEADER, ...rows].join("\n");
 }
@@ -22,17 +40,7 @@ async function upload(
   if (options.regenerate) form.append("regenerateCodes", "true");
   return await fetch(`${BASE}/admin-import`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${options.password ?? PASSWORD}` },
-    body: form,
-  });
-}
-
-async function verify(password: string): Promise<Response> {
-  const form = new FormData();
-  form.append("verifyOnly", "true");
-  return await fetch(`${BASE}/admin-import`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${password}` },
+    headers: { Authorization: `Bearer ${options.password ?? await token()}` },
     body: form,
   });
 }
@@ -58,7 +66,7 @@ Deno.test("rejects a request with no credentials", async () => {
   await res.body?.cancel();
 });
 
-Deno.test("rejects a wrong password", async () => {
+Deno.test("rejects an unknown token", async () => {
   const res = await upload(csv(ROW_A), { password: "nope" });
   assertEquals(res.status, 401);
   await res.body?.cancel();
@@ -163,50 +171,10 @@ Deno.test("merges an aliased name into a single participant", async () => {
 Deno.test("rejects a request with no file", async () => {
   const res = await fetch(`${BASE}/admin-import`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${PASSWORD}` },
+    headers: { Authorization: `Bearer ${await token()}` },
     body: new FormData(),
   });
   assertEquals(res.status, 400);
   await res.body?.cancel();
 });
 
-// The gate tests below consume the admin rate-limit budget, so they must stay
-// at the end of this file: everything above assumes an unthrottled admin path.
-Deno.test("verifyOnly accepts the correct password without writing anything", async () => {
-  const res = await verify(PASSWORD);
-  assertEquals(res.status, 200);
-  assertEquals((await res.json()).ok, true);
-});
-
-Deno.test("verifyOnly rejects a wrong password", async () => {
-  const res = await verify("definitely-not-the-password");
-  assertEquals(res.status, 401);
-  assertEquals((await res.json()).error, "unauthorized");
-});
-
-Deno.test("blocks after too many failures, including non-verifyOnly uploads", async () => {
-  // ADMIN_POLICY allows 10 failures per 15 minutes. Earlier tests in this file
-  // already recorded some, so drive the counter well past the threshold rather
-  // than assuming an exact remainder.
-  for (let i = 0; i < 12; i++) {
-    const res = await verify(`wrong-${i}`);
-    await res.body?.cancel();
-  }
-
-  const blocked = await verify(PASSWORD);
-  assertEquals(blocked.status, 429);
-  assertEquals((await blocked.json()).error, "too_many_attempts");
-
-  // Attaching a file must not bypass the block.
-  const withFile = await upload(csv(ROW_A));
-  assertEquals(withFile.status, 429);
-  await withFile.body?.cancel();
-});
-
-Deno.test("admin blocking does not affect participant logins", async () => {
-  // The previous test drove admin_attempts past its threshold. Participant
-  // logins key on login_attempts and must be unaffected.
-  const res = await lookup("존재하지않는사람", "AAAAAA");
-  assertEquals(res.status, 401);
-  assertEquals((await res.json()).error, "invalid_credentials");
-});
