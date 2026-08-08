@@ -67,13 +67,15 @@ run pnpm exec supabase functions deploy admin-import --no-verify-jwt \
   --project-ref "$PROJECT_REF"
 run pnpm exec supabase functions deploy admin-data --no-verify-jwt \
   --project-ref "$PROJECT_REF"
+run pnpm exec supabase functions deploy send-codes --no-verify-jwt \
+  --project-ref "$PROJECT_REF"
 
 if [[ "$DRY_RUN" == true ]]; then
   echo "dry run complete; skipping smoke tests"
   exit 0
 fi
 
-echo "==> smoke test 1/5: gateway is not swallowing requests"
+echo "==> smoke test 1/6: gateway is not swallowing requests"
 body=$(curl -sS -X POST "${FUNCTIONS_URL}/lookup" \
   -H "Content-Type: application/json" \
   -d '{"name":"존재하지않음","code":"XXXXXX"}')
@@ -90,7 +92,7 @@ echo "    ok"
 # drops the Vary header, so running this against localhost always fails even
 # when cors.ts is correct -- the same class of local/production divergence as
 # the JWT gateway. Do not "fix" a local failure by loosening this assertion.
-echo "==> smoke test 2/5: CORS allows the site origin"
+echo "==> smoke test 2/6: CORS allows the site origin"
 first_origin="${SITE_ORIGIN%%,*}"
 allow=$(curl -sS -X OPTIONS "${FUNCTIONS_URL}/lookup" \
   -H "Origin: ${first_origin}" \
@@ -103,7 +105,7 @@ if [[ "$allow" != "$first_origin" ]]; then
 fi
 echo "    ok"
 
-echo "==> smoke test 3/5: the admin password actually took effect"
+echo "==> smoke test 3/6: the admin password actually took effect"
 login=$(curl -sS -X POST "${FUNCTIONS_URL}/admin-data" \
   -H "Authorization: Bearer ${ADMIN_PASSWORD}" \
   -H "Content-Type: application/json" \
@@ -116,7 +118,7 @@ if ! grep -q '"token"' <<<"$login"; then
 fi
 echo "    ok"
 
-echo "==> smoke test 4/5: admin-data reaches the function, not the gateway"
+echo "==> smoke test 4/6: admin-data reaches the function, not the gateway"
 # Reuses the token from the previous check: admin-data no longer accepts the
 # password on anything but `login`.
 tok=$(sed -n 's/.*"token":"\([^"]*\)".*/\1/p' <<<"$login")
@@ -131,8 +133,20 @@ if ! grep -q '"matches"' <<<"$adm"; then
 fi
 echo "    ok"
 
+echo "==> smoke test 5/6: send-codes answers and records its own URL"
+snd=$(curl -sS -X POST "${FUNCTIONS_URL}/send-codes" \
+  -H "Authorization: Bearer ${tok}" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"status"}')
+if ! grep -q '"pending"' <<<"$snd"; then
+  echo "FAIL: expected a status body, got: $snd" >&2
+  echo "If this shows a gateway 401, redeploy send-codes with --no-verify-jwt." >&2
+  exit 1
+fi
+echo "    ok"
+
 if [[ -n "${ANON_KEY:-}" ]]; then
-  echo "==> smoke test 5/5: RLS blocks the REST endpoint"
+  echo "==> smoke test 6/6: RLS blocks the REST endpoint"
   rest=$(curl -sS "https://${PROJECT_REF}.supabase.co/rest/v1/participants?select=name" \
     -H "apikey: ${ANON_KEY}")
   if grep -q '"name"' <<<"$rest"; then
@@ -141,7 +155,7 @@ if [[ -n "${ANON_KEY:-}" ]]; then
   fi
   echo "    ok"
 else
-  echo "==> smoke test 5/5: skipped (set ANON_KEY to enable the RLS check)"
+  echo "==> smoke test 6/6: skipped (set ANON_KEY to enable the RLS check)"
 fi
 
 echo

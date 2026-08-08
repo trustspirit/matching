@@ -28,6 +28,31 @@
 
    넷 중 앞의 둘이 없으면 이메일 기능만 꺼진 채 배포된다.
 
+   자동 발송 (선택)
+     참가자가 300명을 넘으면 Brevo 무료 플랜의 하루 300통 한도에 걸립니다.
+     관리자 화면에서 "자동 발송"을 켜두면 cron이 5분마다 남은 분들에게
+     이어서 보내고, 전원 발송이 끝나면 스스로 꺼집니다.
+
+     별도 시크릿은 없습니다. cron이 쓰는 인증 값은 마이그레이션이 만들고,
+     함수 주소는 관리자가 처음 화면을 열 때 기록됩니다.
+
+     배포 후 한 번 확인하세요. 관리자 화면을 연 뒤:
+
+       select key, value from app_config where key = 'send_codes_url';
+
+     값이 https://<project-ref>.supabase.co/functions/v1/send-codes 가
+     아니면 cron이 함수를 찾지 못합니다. 그 경우 직접 고치세요:
+
+       update app_config
+          set value = 'https://<project-ref>.supabase.co/functions/v1/send-codes'
+        where key = 'send_codes_url';
+
+     cron이 실제로 돌았는지는 아래로 봅니다:
+
+       select * from cron.job_run_details
+        where jobid = (select jobid from cron.job where jobname = 'send-pending-codes')
+        order by start_time desc limit 5;
+
    손으로 배포할 때 (CI가 막혔거나 급할 때):
 
      PROJECT_REF=<ref> ADMIN_PASSWORD='...' SITE_ORIGIN='...' \
