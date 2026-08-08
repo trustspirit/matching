@@ -450,18 +450,33 @@ Deno.test("two concurrent runs never mail the same person twice", async () => {
   await (await call("arm")).body?.cancel();
 
   let calls = 0;
+  let sentA = 0;
+  let sentB = 0;
   await withBrevo(
-    () => {
+    async () => {
       calls++;
+      // The delay is what gives this test teeth. While run A is still sending,
+      // its rows are claimed but not yet stamped, so run B's claim really does
+      // reach them and has to be refused by the claim guard alone. Remove the
+      // delay and A stamps everything first, leaving `code_sent_at is null` to
+      // do the work -- the test would then pass with the guard deleted.
+      await new Promise((resolve) => setTimeout(resolve, 200));
       return new Response("{}", { status: 201 });
     },
     async () => {
       const [a, b] = await Promise.all([call("run"), call("run")]);
-      await a.body?.cancel();
-      await b.body?.cancel();
+      const [bodyA, bodyB] = await Promise.all([a.json(), b.json()]);
+      sentA = bodyA.sent;
+      sentB = bodyB.sent;
     },
   );
 
+  // With BATCH = 100 and only 6 participants seeded, one run legitimately
+  // claiming all six is correct behaviour, not a bug -- claim_pending_codes
+  // has no obligation to split work evenly between two runs. So this does
+  // NOT assert sentA > 0 && sentB > 0; the invariant under test is only that
+  // nobody is mailed twice, which the totals below are enough to show.
   assertEquals(calls, 6);
+  assertEquals(sentA + sentB, 6);
   assertEquals(await sql("select count(*) from participants where code_sent_at is null;"), "0");
 });
