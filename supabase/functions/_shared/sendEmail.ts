@@ -139,7 +139,12 @@ export async function sendCodeEmail(
     htmlContent: [
       `<p>${escapeHtml(displayName)}님, 안녕하세요.</p>`,
       "<p>매칭 결과를 확인하실 코드입니다.</p>",
-      `<p style="font-size:24px;font-weight:bold;letter-spacing:2px">${code}</p>`,
+      // escapeHtml matters here even though every current caller already
+      // hands this a validated, alphabet-restricted code: this function has
+      // no way to know that, and an admin session (or an XSS on the admin
+      // page) is otherwise free to put arbitrary HTML in `code` and have it
+      // mailed from the organiser's verified sender address.
+      `<p style="font-size:24px;font-weight:bold;letter-spacing:2px">${escapeHtml(code)}</p>`,
       site === null
         ? "<p>안내받으신 사이트에서 이 코드를 입력하시면 상대방과 시간, 장소를 보실 수 있습니다.</p>"
         : `<p>아래 주소에서 코드를 입력하시면 상대방과 시간, 장소를 보실 수 있습니다.</p><p><a href="${site}">${site}</a></p>`,

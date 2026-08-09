@@ -28,13 +28,28 @@ const BATCH = 100;
 /** The mail is already gone by then, so this write is worth retrying. */
 const STAMP_RETRIES = 3;
 
-/** Why a run stopped. The admin screen turns each into a different message. */
-type Outcome = "done" | "quota" | "time" | "disarmed" | "partial";
+/**
+ * Why a run stopped. The admin screen turns each into a different message.
+ *
+ * "blocked" is distinct from "done": both disarm because cron cannot make
+ * further progress, but "done" means everyone reachable has a code, while
+ * "blocked" means one or more participants are stuck at MAX_ATTEMPTS and
+ * still have no code -- a human has to fix an address or reissue a code
+ * before that row is reachable again. Collapsing the two would make an outage
+ * that ran every row to the ceiling look identical to a clean finish.
+ */
+type Outcome = "done" | "quota" | "time" | "disarmed" | "partial" | "blocked";
 
 interface RunSummary {
   outcome: Outcome;
   sent: number;
   failed: number;
+  /**
+   * Reachable, still-uncoded participants parked at MAX_ATTEMPTS. Only
+   * populated (non-zero) on the "blocked" outcome; every other outcome
+   * reports 0 without spending a query on it.
+   */
+  blocked: number;
 }
 
 async function config(db: SupabaseClient, key: string): Promise<string | null> {
@@ -234,6 +249,29 @@ async function pendingCount(db: SupabaseClient): Promise<number | null> {
 }
 
 /**
+ * Reachable participants stuck at the attempt ceiling with no code yet.
+ *
+ * An empty claim batch with pendingCount() also at 0 is still ambiguous: the
+ * queue may be genuinely empty, or every remaining row may have been driven
+ * to MAX_ATTEMPTS by an outage (F1). Only the former may report "done" and
+ * let the admin believe everyone was mailed; the latter must say so.
+ */
+async function blockedCount(db: SupabaseClient): Promise<number | null> {
+  const { count, error } = await db
+    .from("participants")
+    .select("id", { count: "exact", head: true })
+    .not("email", "is", null)
+    .neq("email", "")
+    .is("code_sent_at", null)
+    .gte("send_attempts", MAX_ATTEMPTS);
+  if (error) {
+    console.error("blocked count failed", error);
+    return null;
+  }
+  return count ?? 0;
+}
+
+/**
  * Every stored code, so a freshly minted one cannot collide. Each row carries
  * its own salt, so uniqueness cannot be a database constraint -- the candidate
  * has to be hashed against every salt. See mintCode.ts.
@@ -258,6 +296,16 @@ async function release(db: SupabaseClient, runId: string): Promise<void> {
     .eq("send_claim_id", runId);
   if (error) console.error("claim release failed", error);
 }
+
+/**
+ * Backoff between stamp() retries, indexed by attempt number (1-based) --
+ * BACKOFF_MS[attempt] is the wait AFTER that attempt fails. A short outage of
+ * a few hundred milliseconds otherwise fails all STAMP_RETRIES attempts
+ * inside the same window, since back-to-back retries with no delay are not
+ * independent trials. No entry for the last attempt: there is nothing left to
+ * wait for.
+ */
+const STAMP_BACKOFF_MS = [200, 400];
 
 async function stamp(
   db: SupabaseClient,
@@ -288,14 +336,29 @@ async function stamp(
       return;
     }
     console.error(`stamp failed (attempt ${attempt})`, error);
+    if (attempt < STAMP_RETRIES) {
+      await new Promise((resolve) => setTimeout(resolve, STAMP_BACKOFF_MS[attempt - 1]));
+    }
   }
   // The mail cannot be recalled, so this participant will look pending and get
   // a second code on the next run. Say so rather than hiding it.
-  await db
+  const { error: markerError } = await db
     .from("participants")
     .update({ send_last_error: "발송됨, 기록 실패 — 중복 발송 가능" })
     .eq("id", id)
     .eq("send_claim_id", runId);
+  if (markerError) {
+    // Every write around this send has now failed. The row is left with
+    // code_sent_at null, send_last_error null and the claim released --
+    // indistinguishable from a participant who was never touched, so the next
+    // run mails them again with no trace of this having happened. This is the
+    // one case nothing downstream can recover from; it must be loud.
+    console.error(
+      "stamp marker write also failed -- participant now looks untouched and WILL be mailed a duplicate code",
+      id,
+      markerError,
+    );
+  }
 }
 
 /**
@@ -358,6 +421,12 @@ async function sendOne(
     .select("id");
   if (writeError) {
     console.error("code write failed", writeError);
+    // Without this, send_attempts never moves: the row is retried forever,
+    // run() never sees an empty batch, the schedule never disarms, and
+    // send_last_error stays null so the admin's needs-attention list never
+    // names this participant either. recordFailure leaves the claim in
+    // place; run()'s finally releases it, same as every other failure path.
+    await recordFailure(db, runId, person.id, `code write failed: ${writeError.message}`);
     return "failed";
   }
   if ((written ?? []).length === 0) return "cancelled";
@@ -406,7 +475,7 @@ async function run(db: SupabaseClient): Promise<RunSummary | null> {
     // The reset hour is the account's own midnight, which the same response
     // just told us -- so this is a precise appointment, not a poll interval.
     await setRetryAfter(db, nextResetAt(quota.timezone, new Date()));
-    return { outcome: "quota", sent: 0, failed: 0 };
+    return { outcome: "quota", sent: 0, failed: 0, blocked: 0 };
   }
   // A null quota means the account could not be read. Fall through and let 402
   // be the signal; refusing to send because a status call failed would be worse.
@@ -417,7 +486,7 @@ async function run(db: SupabaseClient): Promise<RunSummary | null> {
   try {
     for (;;) {
       if (Date.now() >= deadline) {
-        return { outcome: "time", sent, failed };
+        return { outcome: "time", sent, failed, blocked: 0 };
       }
 
       const batch = await claim(db, runId);
@@ -429,7 +498,25 @@ async function run(db: SupabaseClient): Promise<RunSummary | null> {
           // Someone is still owed a code but is claimed right now -- this
           // run's own failure (recordFailure deliberately leaves the claim in
           // place), or a concurrent run. Stay armed; the next tick gets them.
-          return { outcome: "partial", sent, failed };
+          return { outcome: "partial", sent, failed, blocked: 0 };
+        }
+        // pendingCount is 0, but that is still ambiguous (F1): it is true both
+        // when the queue is genuinely empty AND when every remaining reachable
+        // participant has been driven to MAX_ATTEMPTS by an outage. Only the
+        // former may report "done" -- the admin must be told the truth in the
+        // latter case rather than seeing a false "전원 발송을 마쳤습니다".
+        const blocked = await blockedCount(db);
+        if (blocked === null) return null;
+        if (blocked > 0) {
+          // Cron cannot make progress on ceiling-blocked rows: only a human
+          // editing an address or reissuing a code resets send_attempts and
+          // lets the row back into claim_pending_codes' WHERE clause. Disarm
+          // exactly as "done" does, since staying armed would just re-run
+          // this same empty batch every five minutes -- but report the count
+          // so the UI can say what actually happened.
+          await setArmed(db, false);
+          await setRetryAfter(db, null);
+          return { outcome: "blocked", sent, failed, blocked };
         }
         // The queue is genuinely empty. Disarm so the next CSV import cannot
         // start mailing people before anyone has looked at it, and drop any
@@ -437,13 +524,13 @@ async function run(db: SupabaseClient): Promise<RunSummary | null> {
         // first run.
         await setArmed(db, false);
         await setRetryAfter(db, null);
-        return { outcome: "done", sent, failed };
+        return { outcome: "done", sent, failed, blocked: 0 };
       }
 
       for (const person of batch) {
         if (Date.now() >= deadline) {
           await release(db, runId);
-          return { outcome: "time", sent, failed };
+          return { outcome: "time", sent, failed, blocked: 0 };
         }
         const result = await sendOne(db, runId, person, taken, deadline);
         if (result === "sent") {
@@ -456,10 +543,10 @@ async function run(db: SupabaseClient): Promise<RunSummary | null> {
           // Only an empty queue disarms. The backoff is what keeps the schedule
           // from re-probing every five minutes until Brevo's counter resets.
           await setRetryAfter(db, new Date(Date.now() + QUOTA_BACKOFF_MS));
-          return { outcome: "quota", sent, failed };
+          return { outcome: "quota", sent, failed, blocked: 0 };
         } else if (result === "time") {
           await release(db, runId);
-          return { outcome: "time", sent, failed };
+          return { outcome: "time", sent, failed, blocked: 0 };
         }
         // "cancelled" is neither: nothing was sent and nothing went wrong.
       }
@@ -522,7 +609,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       return jsonResponse(req, { error: "email_disabled" }, 400);
     }
     if (!await isArmed(db)) {
-      const summary: RunSummary = { outcome: "disarmed", sent: 0, failed: 0 };
+      const summary: RunSummary = { outcome: "disarmed", sent: 0, failed: 0, blocked: 0 };
       return jsonResponse(req, summary);
     }
     const summary = await run(db);

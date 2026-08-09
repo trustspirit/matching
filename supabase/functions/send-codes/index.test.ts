@@ -358,7 +358,13 @@ Deno.test("a partial run stays armed instead of silently dropping the failure", 
   );
 });
 
-Deno.test("a participant who exhausts every attempt lets the run finish and disarm", async () => {
+Deno.test("a participant who exhausts every attempt is reported blocked, not silently done (F1)", async () => {
+  // This test used to assert the 5th run's outcome was "done" -- that was the
+  // F1 bug: pendingCount() hits 0 once every reachable row is past
+  // MAX_ATTEMPTS, and treating that the same as a genuinely empty queue tells
+  // the admin "전원 발송을 마쳤습니다" while this participant has no code and
+  // never will until someone intervenes. The correct outcome is the new
+  // "blocked" branch, with the RunSummary.blocked count naming how many.
   await seed(1);
   await (await call("arm")).body?.cancel();
 
@@ -367,7 +373,8 @@ Deno.test("a participant who exhausts every attempt lets the run finish and disa
   // ceiling takes five separate runs, each picking the row back up after the
   // previous run's finally() releases it. The first four each still find the
   // participant owed a code (outcome "partial"); only the fifth, once
-  // send_attempts hits MAX_ATTEMPTS, sees a genuinely empty queue.
+  // send_attempts hits MAX_ATTEMPTS, sees a genuinely empty claim batch --
+  // which must now be reported as "blocked", not "done".
   let calls = 0;
   await withBrevo(
     () => {
@@ -379,7 +386,8 @@ Deno.test("a participant who exhausts every attempt lets the run finish and disa
         const body = await (await call("run")).json();
         assertEquals(body.sent, 0, `run ${i}`);
         assertEquals(body.failed, 1, `run ${i}`);
-        assertEquals(body.outcome, i < 5 ? "partial" : "done", `run ${i}`);
+        assertEquals(body.outcome, i < 5 ? "partial" : "blocked", `run ${i}`);
+        assertEquals(body.blocked, i < 5 ? 0 : 1, `run ${i}`);
       }
     },
   );
@@ -394,6 +402,56 @@ Deno.test("a participant who exhausts every attempt lets the run finish and disa
   assertEquals(
     await sql("select value from app_config where key = 'code_send_armed';"),
     "false",
+  );
+});
+
+Deno.test("F1: an empty queue with nothing blocked still reports done, not blocked", async () => {
+  // Guards the other half of the branch: pendingCount 0 AND blockedCount 0
+  // must stay "done" with blocked: 0, exactly as before F1.
+  await seed(2);
+  await (await call("arm")).body?.cancel();
+
+  await withBrevo(
+    () => new Response("{}", { status: 201 }),
+    async () => {
+      const body = await (await call("run")).json();
+      assertEquals(body.outcome, "done");
+      assertEquals(body.blocked, 0);
+    },
+  );
+});
+
+Deno.test("F1: an outage that runs everyone to the ceiling is reported blocked, disarmed, with an accurate count", async () => {
+  // The scenario from the finding: several participants all fail every
+  // attempt (standing in for a transient Brevo/network outage), so every
+  // reachable row is eventually stuck at MAX_ATTEMPTS with no code sent.
+  // pendingCount() alone cannot tell this apart from a clean finish; only
+  // blockedCount() can, and the outcome must say so.
+  await seed(3);
+  await (await call("arm")).body?.cancel();
+
+  await withBrevo(
+    () => new Response(JSON.stringify({ message: "invalid email" }), { status: 400 }),
+    async () => {
+      let last;
+      for (let i = 1; i <= 5; i++) {
+        last = await (await call("run")).json();
+      }
+      assertEquals(last.outcome, "blocked");
+      assertEquals(last.blocked, 3);
+      assertEquals(last.sent, 0);
+    },
+  );
+
+  // Ceiling-blocked rows cannot be progressed by cron; staying armed would
+  // just re-run the same empty, ceiling-blocked batch every five minutes.
+  assertEquals(
+    await sql("select value from app_config where key = 'code_send_armed';"),
+    "false",
+  );
+  assertEquals(
+    await sql("select count(*) from participants where code_sent_at is null;"),
+    "3",
   );
 });
 
@@ -514,4 +572,69 @@ Deno.test("two concurrent runs never mail the same person twice", async () => {
   assertEquals(calls, 6);
   assertEquals(sentA + sentB, 6);
   assertEquals(await sql("select count(*) from participants where code_sent_at is null;"), "0");
+});
+
+Deno.test("F3: a code-write failure records the attempt instead of retrying forever", async () => {
+  // sendOne()'s code-salt/code-hash UPDATE can fail for reasons that have
+  // nothing to do with the participant -- a DB blip, a permissions drift.
+  // Before the fix, that branch returned "failed" without ever calling
+  // recordFailure(): send_attempts stayed 0 forever, the row was reclaimed
+  // and retried every run, run() never saw an empty batch so the schedule
+  // never disarmed, and send_last_error stayed null so the admin's
+  // needs-attention list never named this participant either.
+  //
+  // Reproduced by narrowly revoking UPDATE on exactly code_salt/code_hash for
+  // service_role -- the role every Edge Function connects as -- for the
+  // duration of this test only. Every other column stays writable, so
+  // recordFailure() and release() (which the fix depends on) are unaffected;
+  // only the one write path this finding is about fails. claim_pending_codes
+  // is unaffected too: it is SECURITY DEFINER and runs as its owner, not the
+  // caller, so table grants on participants do not apply to it.
+  await seed(1);
+  await (await call("arm")).body?.cancel();
+
+  await sql("revoke update on public.participants from service_role;");
+  await sql(
+    `grant update (name, display_name, birthdate, gender, contact, email,
+       code_sent_at, send_claim_id, send_claimed_at, send_attempts, send_last_error)
+     on public.participants to service_role;`,
+  );
+  try {
+    await withBrevo(
+      () => new Response("{}", { status: 201 }),
+      async () => {
+        const body = await (await call("run")).json();
+        assertEquals(body.sent, 0);
+        assertEquals(body.failed, 1);
+        // Not "done": the row is still owed a code, it just could not be
+        // written this attempt.
+        assertEquals(body.outcome, "partial");
+      },
+    );
+  } finally {
+    // Restore exactly the blanket grant this suite's other tests depend on.
+    await sql(
+      `revoke update (name, display_name, birthdate, gender, contact, email,
+         code_sent_at, send_claim_id, send_claimed_at, send_attempts, send_last_error)
+       on public.participants from service_role;`,
+    );
+    await sql("grant update on public.participants to service_role;");
+  }
+
+  assertEquals(
+    await sql("select send_attempts from participants where display_name = '사람0';"),
+    "1",
+  );
+  assertEquals(
+    await sql(
+      "select send_last_error like 'code write failed%' from participants where display_name = '사람0';",
+    ),
+    "t",
+  );
+  // The claim must not be left behind, or the row is invisible to the next
+  // run for the full five-minute stale window on top of the failure itself.
+  assertEquals(
+    await sql("select send_claim_id is null from participants where display_name = '사람0';"),
+    "t",
+  );
 });

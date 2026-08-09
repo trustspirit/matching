@@ -668,3 +668,330 @@ Deno.test("send_code refuses a participant with no email", async () => {
   // address that does not exist.
   assertEquals((await res.json()).error, "no_email");
 });
+
+/**
+ * Stands in for Brevo. supabase/functions/.env points BREVO_API_URL at this
+ * fixed port, so the running function reaches it on every request without any
+ * env var crossing the process boundary -- same technique as
+ * send-codes/index.test.ts's withBrevo.
+ */
+async function withBrevo(
+  handler: (req: Request) => Response | Promise<Response>,
+  body: () => Promise<void>,
+): Promise<void> {
+  const controller = new AbortController();
+  const server = Deno.serve(
+    { port: 8799, signal: controller.signal, onListen: () => {} },
+    handler,
+  );
+  try {
+    await body();
+  } finally {
+    controller.abort();
+    await server.finished;
+  }
+}
+
+/** Arms or disarms automatic sending through send-codes, reusing this file's token. */
+async function armSending(armed: boolean): Promise<void> {
+  await (
+    await fetch(`${BASE}/send-codes`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${await token()}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ action: armed ? "arm" : "disarm" }),
+    })
+  ).body?.cancel();
+}
+
+Deno.test("send_code rejects a code that no longer matches what is stored (F2 stale)", async () => {
+  await ensureAbsent("스테일유저");
+  const created = await (await call("create_participant", {
+    displayName: "스테일유저",
+    birthdate: "1993-03-03",
+    gender: "F",
+    contact: "",
+    email: "stale@example.com",
+  })).json();
+  const shownCode = created.code;
+
+  // Stands in for a concurrent cron tick reissuing this participant's code
+  // between the moment the admin's browser fetched shownCode and the moment
+  // they click send.
+  const reissued = await (await call("regenerate_code", { id: created.id })).json();
+  assert(reissued.code !== shownCode);
+
+  const res = await call("send_code", { id: created.id, code: shownCode });
+  assertEquals(res.status, 400);
+  assertEquals((await res.json()).error, "stale_code");
+
+  // The claim this request took must be released, not left behind, and
+  // nothing may have been sent under either code.
+  assertEquals(
+    await sql(`select send_claim_id is null from participants where id = '${created.id}';`),
+    "t",
+  );
+  assertEquals(
+    await sql(`select code_sent_at is null from participants where id = '${created.id}';`),
+    "t",
+  );
+});
+
+Deno.test("send_code refuses while another run holds a live claim (F2 in-progress)", async () => {
+  await ensureAbsent("진행중유저");
+  const created = await (await call("create_participant", {
+    displayName: "진행중유저",
+    birthdate: "1993-03-05",
+    gender: "M",
+    contact: "",
+    email: "inprogress@example.com",
+  })).json();
+
+  // Stands in for cron's claim_pending_codes having claimed this row moments
+  // ago and being mid-send.
+  await sql(
+    `update participants set send_claim_id = gen_random_uuid(), send_claimed_at = now() where id = '${created.id}';`,
+  );
+
+  const res = await call("send_code", { id: created.id, code: created.code });
+  assertEquals(res.status, 409);
+  assertEquals((await res.json()).error, "send_in_progress");
+
+  // Refused before any send was attempted, so the live claim is untouched --
+  // this request must not have released a claim it never took.
+  assertEquals(
+    await sql(`select send_claim_id is not null from participants where id = '${created.id}';`),
+    "t",
+  );
+});
+
+Deno.test("send_code reclaims a claim older than five minutes and sends normally (F2 happy path)", async () => {
+  await ensureAbsent("정상발송");
+  const created = await (await call("create_participant", {
+    displayName: "정상발송",
+    birthdate: "1993-03-06",
+    gender: "F",
+    contact: "",
+    email: "ok@example.com",
+  })).json();
+
+  // A claim older than five minutes belonged to a run that died -- the same
+  // staleness window claim_pending_codes uses. It must not block a fresh
+  // manual send.
+  await sql(
+    `update participants set send_claim_id = gen_random_uuid(), send_claimed_at = now() - interval '6 minutes' where id = '${created.id}';`,
+  );
+
+  await withBrevo(
+    () => new Response("{}", { status: 201 }),
+    async () => {
+      const res = await call("send_code", { id: created.id, code: created.code });
+      assertEquals(res.status, 200);
+      const body = await res.json();
+      assertEquals(body.ok, true);
+      assertEquals(body.email, "ok@example.com");
+    },
+  );
+
+  assertEquals(
+    await sql(`select code_sent_at is not null from participants where id = '${created.id}';`),
+    "t",
+  );
+  assertEquals(
+    await sql(`select send_claim_id is null from participants where id = '${created.id}';`),
+    "t",
+  );
+});
+
+Deno.test("send_code rejects a malformed code before touching the row (F8)", async () => {
+  await ensureAbsent("포맷불량");
+  const created = await (await call("create_participant", {
+    displayName: "포맷불량",
+    birthdate: "1993-03-07",
+    gender: "M",
+    contact: "",
+    email: "badformat@example.com",
+  })).json();
+
+  const res = await call("send_code", {
+    id: created.id,
+    code: "<img src=x onerror=alert(1)>",
+  });
+  assertEquals(res.status, 400);
+  assertEquals((await res.json()).error, "invalid_request");
+
+  // Rejected before any claim was taken.
+  assertEquals(
+    await sql(`select send_claim_id is null from participants where id = '${created.id}';`),
+    "t",
+  );
+});
+
+Deno.test("update_participant preserves an in-flight claim when the email is unchanged (F4)", async () => {
+  await ensureAbsent("클레임유지");
+  const created = await (await call("create_participant", {
+    displayName: "클레임유지",
+    birthdate: "1993-03-08",
+    gender: "F",
+    contact: "",
+    email: "keep@example.com",
+  })).json();
+
+  const claimId = crypto.randomUUID();
+  await sql(
+    `update participants set send_claim_id = '${claimId}', send_claimed_at = now() where id = '${created.id}';`,
+  );
+
+  const res = await call("update_participant", {
+    id: created.id,
+    displayName: "클레임유지",
+    birthdate: "1993-03-08",
+    gender: "F",
+    contact: "010-1234-5678",
+    email: "keep@example.com",
+  });
+  assertEquals(res.status, 200);
+  await res.body?.cancel();
+
+  // Unchanged: the in-flight send is still going to the right address, so
+  // cancelling it would only produce a redundant second mail.
+  assertEquals(
+    await sql(`select send_claim_id from participants where id = '${created.id}';`),
+    claimId,
+  );
+});
+
+Deno.test("update_participant abandons an in-flight claim when the email changes (F4)", async () => {
+  await ensureAbsent("클레임취소");
+  const created = await (await call("create_participant", {
+    displayName: "클레임취소",
+    birthdate: "1993-03-09",
+    gender: "M",
+    contact: "",
+    email: "typo@example.com",
+  })).json();
+
+  await sql(
+    `update participants set send_claim_id = gen_random_uuid(), send_claimed_at = now() where id = '${created.id}';`,
+  );
+
+  const res = await call("update_participant", {
+    id: created.id,
+    displayName: "클레임취소",
+    birthdate: "1993-03-09",
+    gender: "M",
+    contact: "",
+    email: "fixed@example.com",
+  });
+  assertEquals(res.status, 200);
+  await res.body?.cancel();
+
+  // Changed: the in-flight send is going to the WRONG address now, so it must
+  // be abandoned so the row stays pending and is re-sent to the new address.
+  assertEquals(
+    await sql(`select send_claim_id is null from participants where id = '${created.id}';`),
+    "t",
+  );
+});
+
+/** Uploads a small CSV built from HEADER plus the given data rows. */
+async function importCsv(rows: string[]): Promise<Response> {
+  const form = new FormData();
+  form.append(
+    "file",
+    new Blob([[HEADER, ...rows].join("\n")], { type: "text/csv" }),
+    "matches.csv",
+  );
+  return await fetch(`${BASE}/admin-import`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${await token()}` },
+    body: form,
+  });
+}
+
+Deno.test("re-importing with the code and email both unchanged preserves an in-flight claim (F5 control)", async () => {
+  const row =
+    "1부,,소극장,1조,메일고정남,1988-08-08,010-1111-1111,fix-control@example.com,메일고정여,1988-08-09,010-1111-1112,fixpartner-control@example.com";
+  await (await importCsv([row])).body?.cancel();
+
+  const id = await idOf("메일고정남");
+  const claimId = crypto.randomUUID();
+  await sql(
+    `update participants set send_claim_id = '${claimId}', send_claimed_at = now() where id = '${id}';`,
+  );
+
+  // Re-imported with only a harmless contact tweak -- code and email both
+  // stay exactly the same, so ...0011's original reasoning still applies: a
+  // run mid-flight sending the current code to the current address must be
+  // left alone.
+  const rowAgain = row.replace("010-1111-1111", "010-2222-2222");
+  await (await importCsv([rowAgain])).body?.cancel();
+
+  assertEquals(await sql(`select send_claim_id from participants where id = '${id}';`), claimId);
+});
+
+Deno.test("re-importing a corrected email abandons an in-flight claim (F5)", async () => {
+  const row =
+    "1부,,소극장,1조,메일고침남,1988-08-10,010-3333-3333,typo@example.con,메일고침여,1988-08-11,010-3333-3334,fixpartner2@example.com";
+  await (await importCsv([row])).body?.cancel();
+
+  const id = await idOf("메일고침남");
+  // Stands in for a run mid-flight, currently holding the OLD (typo'd)
+  // address in memory.
+  await sql(
+    `update participants set send_claim_id = gen_random_uuid(), send_claimed_at = now() where id = '${id}';`,
+  );
+
+  const corrected = row.replace("typo@example.con", "typo@example.com");
+  await (await importCsv([corrected])).body?.cancel();
+
+  // The claim must be gone: left in place, the in-flight run's stamp() would
+  // still succeed under the old address and mark this row done while the
+  // corrected address never got a code.
+  assertEquals(await sql(`select send_claim_id is null from participants where id = '${id}';`), "t");
+  // code_sent_at is deliberately untouched by an address-only fix -- see the
+  // migration's comment -- and the attempt/error resets stay unconditional
+  // regardless of what changed.
+  assertEquals(await sql(`select send_attempts from participants where id = '${id}';`), "0");
+});
+
+Deno.test("regenerate_codes (bulk) refuses while automatic sending is armed (F7)", async () => {
+  await seed();
+  const { maleId } = await ids();
+  const before = (await (await call("regenerate_code", { id: maleId })).json()).code;
+
+  await armSending(true);
+  try {
+    const subset = await call("regenerate_codes", { ids: [maleId] });
+    assertEquals(subset.status, 409);
+    assertEquals((await subset.json()).error, "armed_conflict");
+
+    const everyone = await call("regenerate_codes");
+    assertEquals(everyone.status, 409);
+    assertEquals((await everyone.json()).error, "armed_conflict");
+  } finally {
+    await armSending(false);
+  }
+
+  // Nothing was actually reissued: the code from before the armed check
+  // still authenticates.
+  assertEquals((await participantLogin("표남", before)).status, 200);
+});
+
+Deno.test("regenerate_code (single) still works while armed -- F2 makes it safe (F7)", async () => {
+  const maleId = await idOf("표남");
+
+  await armSending(true);
+  let reissuedCode: string;
+  try {
+    const res = await call("regenerate_code", { id: maleId });
+    assertEquals(res.status, 200);
+    reissuedCode = (await res.json()).code;
+  } finally {
+    await armSending(false);
+  }
+
+  assertEquals((await participantLogin("표남", reissuedCode!)).status, 200);
+});
