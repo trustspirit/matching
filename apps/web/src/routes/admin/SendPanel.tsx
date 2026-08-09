@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
+import type { AdminParticipantRow } from "@shared/types.ts";
 import { ApiError, sendCodes } from "../../api/client";
 import { Button } from "../../design/Button";
+import { ConfirmDialog } from "../../design/ConfirmDialog";
 
 interface AttentionRow {
   displayName: string;
@@ -16,25 +18,42 @@ interface SendStatus {
 }
 
 interface RunSummary {
-  outcome: "done" | "quota" | "time" | "partial" | "disarmed";
+  outcome: "done" | "quota" | "time" | "partial" | "disarmed" | "blocked";
   sent: number;
   failed: number;
+  // Populated (non-zero) only for "blocked": how many participants are stuck
+  // at the failure ceiling and need a human to edit an address or reissue a
+  // code before they become sendable again.
+  blocked: number;
 }
 
 /**
  * Every outcome except "done" means work is left over, and the admin has to
  * understand that waiting is correct -- otherwise they keep pressing the
- * button and mint a new code for everyone each time.
+ * button and mint a new code for everyone each time. Kept as functions
+ * (rather than plain strings) because "blocked" has to report a real count,
+ * and a Record keyed by every RunSummary["outcome"] means TypeScript refuses
+ * to compile if a future outcome is added here without matching copy.
  */
-const OUTCOME: Record<RunSummary["outcome"], string> = {
-  done: "전원 발송을 마쳤습니다. 자동 발송은 꺼졌습니다.",
-  quota: "오늘 메일 한도(300통)에 도달했습니다. 남은 분들은 내일 자동으로 이어서 나갑니다.",
-  time: "한 번에 처리할 수 있는 시간을 넘겼습니다. 남은 분들은 몇 분 안에 자동으로 이어서 나갑니다.",
+const OUTCOME: Record<RunSummary["outcome"], (summary: RunSummary) => string> = {
+  done: () => "전원 발송을 마쳤습니다. 자동 발송은 꺼졌습니다.",
+  quota: () =>
+    "오늘 메일 한도(300통)에 도달했습니다. 남은 분들은 내일 자동으로 이어서 나갑니다.",
+  time: () =>
+    "한 번에 처리할 수 있는 시간을 넘겼습니다. 남은 분들은 몇 분 안에 자동으로 이어서 나갑니다.",
   // Someone is still owed a code but is claimed right now -- by this run's
   // own failed send or by a concurrent run. Not an error and not finished;
   // the schedule stays armed and the next tick picks them up on its own.
-  partial: "남은 분들은 처리가 진행 중입니다. 몇 분 안에 자동으로 이어서 나갑니다.",
-  disarmed: "자동 발송이 꺼져 있어 아무것도 보내지 않았습니다.",
+  partial: () => "남은 분들은 처리가 진행 중입니다. 몇 분 안에 자동으로 이어서 나갑니다.",
+  disarmed: () => "자동 발송이 꺼져 있어 아무것도 보내지 않았습니다.",
+  // This is the outcome the old "done" bug used to masquerade as: nothing
+  // sendable, but only because everyone left was driven out of the queue by
+  // repeated failures -- not because they all received mail. Must read as
+  // unfinished, name the count, and say what unblocks them.
+  blocked: (summary) =>
+    `더 보낼 대상이 없습니다. ${summary.blocked}명이 발송 실패가 반복되어 대기열에서 ` +
+    `빠졌고, 자동 발송은 꺼졌습니다. 이메일 주소를 확인하고 저장하거나 코드를 재발급해 ` +
+    `다시 대상으로 만든 뒤, 자동 발송을 다시 켜주세요.`,
 };
 
 const MESSAGES: Record<string, string> = {
@@ -46,6 +65,14 @@ const MESSAGES: Record<string, string> = {
 
 interface SendPanelProps {
   token: string;
+  /**
+   * Not read for its contents -- only so a fresh array reference (Admin.tsx
+   * hands one out on every reload()) re-triggers the status fetch. Without
+   * this, reissuing codes elsewhere in the same tab resets code_sent_at on
+   * the server but this panel keeps showing its stale "미발송 0명" and
+   * leaves 지금 실행 disabled, so nobody notices those people need a code.
+   */
+  participants: AdminParticipantRow[];
   onChanged: () => void;
   /**
    * Reports whether email is configured every time status is (re)read, so
@@ -56,11 +83,16 @@ interface SendPanelProps {
   onStatus?: (enabled: boolean) => void;
 }
 
-export function SendPanel({ token, onChanged, onStatus }: SendPanelProps) {
+export function SendPanel({ token, participants, onChanged, onStatus }: SendPanelProps) {
   const [status, setStatus] = useState<SendStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [summary, setSummary] = useState<RunSummary | null>(null);
   const [error, setError] = useState<string | undefined>();
+  // Arming is the one-click action Finding 1 fixes: it mints a NEW code for
+  // every pending participant within five minutes and cannot be recalled, so
+  // it gets a ConfirmDialog first. Disarming stays a single click -- turning
+  // automatic sending off is always safe.
+  const [confirmingArm, setConfirmingArm] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -77,7 +109,10 @@ export function SendPanel({ token, onChanged, onStatus }: SendPanelProps) {
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+    // `participants` is intentionally in the dependency list even though its
+    // contents are unused: it is what makes a reissue-codes reload elsewhere
+    // in the tab refresh this panel's stale pending count.
+  }, [refresh, participants]);
 
   function report(caught: unknown): void {
     setError(
@@ -87,13 +122,29 @@ export function SendPanel({ token, onChanged, onStatus }: SendPanelProps) {
     );
   }
 
-  async function toggle(): Promise<void> {
+  async function disarm(): Promise<void> {
     if (busy || status === null) return;
     setBusy(true);
     setError(undefined);
     try {
-      await sendCodes(token, status.armed ? "disarm" : "arm");
+      await sendCodes(token, "disarm");
       setSummary(null);
+      await refresh();
+    } catch (caught) {
+      report(caught);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmArm(): Promise<void> {
+    if (busy || status === null) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      await sendCodes(token, "arm");
+      setSummary(null);
+      setConfirmingArm(false);
       await refresh();
     } catch (caught) {
       report(caught);
@@ -140,7 +191,7 @@ export function SendPanel({ token, onChanged, onStatus }: SendPanelProps) {
             variant="tertiary"
             bordered
             loading={busy}
-            onClick={() => void toggle()}
+            onClick={() => void disarm()}
           >
             자동 발송 끄기
           </Button>
@@ -166,7 +217,7 @@ export function SendPanel({ token, onChanged, onStatus }: SendPanelProps) {
             variant={status.armed ? "tertiary" : "caution"}
             bordered
             loading={busy}
-            onClick={() => void toggle()}
+            onClick={() => status.armed ? void disarm() : setConfirmingArm(true)}
           >
             {status.armed ? "자동 발송 끄기" : "자동 발송 켜기"}
           </Button>
@@ -194,7 +245,7 @@ export function SendPanel({ token, onChanged, onStatus }: SendPanelProps) {
       {summary !== null && (
         <p className="type-body-sm mt-xs">
           {summary.sent}명 발송
-          {summary.failed > 0 && `, ${summary.failed}명 실패`}. {OUTCOME[summary.outcome]}
+          {summary.failed > 0 && `, ${summary.failed}명 실패`}. {OUTCOME[summary.outcome](summary)}
         </p>
       )}
 
@@ -218,6 +269,33 @@ export function SendPanel({ token, onChanged, onStatus }: SendPanelProps) {
 
       {error !== undefined && (
         <p role="alert" className="type-body-sm mt-xs text-error">{error}</p>
+      )}
+
+      {confirmingArm && (
+        <ConfirmDialog
+          title={`${status.pending}명에게 코드를 자동으로 발송합니다`}
+          confirmLabel="자동 발송 켜기"
+          busy={busy}
+          onConfirm={() => void confirmArm()}
+          onCancel={() => setConfirmingArm(false)}
+          body={
+            <>
+              <p>
+                자동 발송을 켜면 미발송 대상 <strong>{status.pending}명</strong>에게 5분
+                안에 메일이 나갑니다. 서버는 코드를 해시로만 보관해 기존 코드를 다시 보낼
+                수 없으므로, 각자에게 <strong>새로 발급된 코드</strong>가 나가고{" "}
+                <strong>이미 나눠준 코드는 즉시 무효</strong>가 됩니다.
+              </p>
+              <p className="mt-md">
+                하루 발송 한도는 300통이며, 남은 인원은 다음 날 자동으로 이어서
+                발송됩니다.
+              </p>
+              <p className="mt-md text-error">
+                메일은 한 번 나가면 되돌릴 수 없습니다.
+              </p>
+            </>
+          }
+        />
       )}
     </div>
   );

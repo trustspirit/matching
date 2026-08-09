@@ -20,6 +20,19 @@ const MESSAGES: Record<string, string> = {
   not_found: "이미 삭제된 항목입니다. 새로고침 후 다시 시도해주세요.",
   unauthorized: "비밀번호가 올바르지 않습니다.",
   too_many_attempts: "시도가 너무 많습니다. 잠시 후 다시 시도해주세요.",
+  // send_code (per-row): another run currently holds this row's claim --
+  // cron's own 5분 tick, or a concurrent admin tab. Not an error with this
+  // request, just bad timing; retrying shortly clears it.
+  send_in_progress: "지금 다른 발송이 이 참가자를 처리 중입니다. 잠시 후 다시 시도해주세요.",
+  // send_code (per-row): the code shown on screen no longer matches what the
+  // server holds -- someone else (cron or another tab) already reissued it.
+  // The plaintext on screen is dead; only a fresh reissue produces one that
+  // will actually work.
+  stale_code: "화면의 코드가 이미 바뀌었습니다. 코드를 다시 발급해주세요.",
+  // regenerate_codes (bulk, from 전체/선택 코드 재발급): refused while
+  // automatic sending is armed, because resetting code_sent_at on many rows
+  // while armed would hand cron a fresh batch to mail within five minutes.
+  armed_conflict: "자동 발송이 켜져 있는 동안은 일괄 재발급할 수 없습니다. 먼저 자동 발송을 꺼주세요.",
   network_error: "연결에 실패했습니다. 다시 시도해주세요.",
   server_error: "서버 오류가 발생했습니다.",
 };
@@ -400,7 +413,12 @@ export function ParticipantsTab({
         </div>
       </div>
 
-      <SendPanel token={token} onChanged={onChanged} onStatus={setEmailEnabled} />
+      <SendPanel
+        token={token}
+        participants={participants}
+        onChanged={onChanged}
+        onStatus={setEmailEnabled}
+      />
 
       {confirming !== null && (
         <ConfirmDialog
