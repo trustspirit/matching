@@ -805,6 +805,114 @@ Deno.test("send_code reclaims a claim older than five minutes and sends normally
   );
 });
 
+Deno.test("send_code releases its claim even when the stamp write errors (R2)", async () => {
+  await ensureAbsent("스탬프실패");
+  const created = await (await call("create_participant", {
+    displayName: "스탬프실패",
+    birthdate: "1993-03-09",
+    gender: "F",
+    contact: "",
+    email: "stampfail@example.com",
+  })).json();
+
+  // Fires only on the write stamp() makes -- the one that sets code_sent_at
+  // -- so the claim update that precedes it is untouched. Stands in for a
+  // transient DB fault on that specific write, the exact path F["stampError"]
+  // in send_code covers: send succeeds, but the write that was supposed to
+  // clear the claim comes back with an error instead.
+  await sql(`
+    create or replace function test_break_stamp() returns trigger as $$
+    begin
+      raise exception 'induced stamp failure for test';
+    end;
+    $$ language plpgsql;
+  `);
+  await sql(
+    `create trigger break_stamp before update of code_sent_at on participants ` +
+      `for each row when (new.id = '${created.id}') execute function test_break_stamp();`,
+  );
+
+  try {
+    await withBrevo(
+      () => new Response("{}", { status: 201 }),
+      async () => {
+        const res = await call("send_code", { id: created.id, code: created.code });
+        // The mail already went out (the stub above accepted it), so the
+        // request still reports success even though the write behind it
+        // failed -- send_code's own documented behaviour when stamping fails.
+        assertEquals(res.status, 200);
+        const body = await res.json();
+        assertEquals(body.ok, true);
+      },
+    );
+  } finally {
+    await sql("drop trigger if exists break_stamp on participants;");
+    await sql("drop function if exists test_break_stamp();");
+  }
+
+  // The point of this test: without the try/finally fix, this claim would
+  // still be held by the dead request and this row would be invisible to
+  // both the automatic sender and a retried manual send for a full five
+  // minutes -- and, per the code's own comment, mailed a duplicate code
+  // later since code_sent_at never got set either.
+  assertEquals(
+    await sql(`select send_claim_id is null from participants where id = '${created.id}';`),
+    "t",
+  );
+  assertEquals(
+    await sql(`select code_sent_at is null from participants where id = '${created.id}';`),
+    "t",
+  );
+});
+
+Deno.test("send_code releases its claim when sendCodeEmail throws (R2)", async () => {
+  await ensureAbsent("발송예외");
+  const created = await (await call("create_participant", {
+    displayName: "발송예외",
+    birthdate: "1993-03-10",
+    gender: "M",
+    contact: "",
+    email: "exception@example.com",
+  })).json();
+
+  await withBrevo(
+    () =>
+      // sendCodeEmail wraps only the fetch() call itself in try/catch; the
+      // `!res.ok` branch right after it reads the body with a bare
+      // `await res.text()`. A body stream that errors mid-read makes that
+      // await throw a genuine exception out of sendCodeEmail, through
+      // send_code, past the point where the claim was taken -- exactly the
+      // "thrown exception between claiming and releasing" this fix guards,
+      // as opposed to a returned SendResult the code already branches on.
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(new Error("induced stream failure for test"));
+          },
+        }),
+        { status: 500 },
+      ),
+    async () => {
+      const res = await call("send_code", { id: created.id, code: created.code });
+      // Nothing here catches the exception, so it reaches Deno.serve's
+      // default handler and comes back as a plain 500 rather than one of
+      // send_code's own { error } bodies. What matters is not this status
+      // code but that the claim was not left behind on the way there.
+      assertEquals(res.status, 500);
+      await res.body?.cancel();
+    },
+  );
+
+  assertEquals(
+    await sql(`select send_claim_id is null from participants where id = '${created.id}';`),
+    "t",
+  );
+  assertEquals(
+    await sql(`select code_sent_at is null from participants where id = '${created.id}';`),
+    "t",
+  );
+});
+
 Deno.test("send_code rejects a malformed code before touching the row (F8)", async () => {
   await ensureAbsent("포맷불량");
   const created = await (await call("create_participant", {

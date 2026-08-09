@@ -710,48 +710,61 @@ Deno.serve(async (req: Request): Promise<Response> => {
       return jsonResponse(req, { error: "send_in_progress" }, 409);
     }
 
-    if (claimed.email === null || claimed.email === "") {
-      await releaseSendClaim(db, id, claimId);
-      return jsonResponse(req, { error: "no_email" }, 400);
-    }
+    // From here on this request holds the claim. Every exit from this point
+    // -- an early return, the stamp write erroring, or an exception thrown by
+    // hashCode/sendCodeEmail/response building -- must hand it back, mirroring
+    // run()'s finally in send-codes/index.ts. Without this, a stamp error or a
+    // thrown exception used to leak the claim: the row was then invisible to
+    // both the sender and this action for the full five-minute stale window,
+    // and on the stamp-error path specifically that also means a duplicate
+    // code mailed later. releaseSendClaim is already guarded by claimId (its
+    // update matches `.eq("send_claim_id", claimId)`), so calling it here
+    // unconditionally is safe: it is a no-op both when stamp() already cleared
+    // the claim on success, and when a DIFFERENT run has since taken it.
+    try {
+      if (claimed.email === null || claimed.email === "") {
+        return jsonResponse(req, { error: "no_email" }, 400);
+      }
 
-    // The plaintext comes back from the browser because the server never kept
-    // it; only its hash is stored. But by the time this request lands, a
-    // claimed cron run may already have minted and mailed a NEW code for this
-    // row -- so the presented plaintext must be checked against what is
-    // actually stored right now, with the same normalisation the lookup path
-    // uses, before it is sent anywhere.
-    const digest = await hashCode(claimed.code_salt, code);
-    if (!timingSafeEqual(digest, claimed.code_hash)) {
-      await releaseSendClaim(db, id, claimId);
-      return jsonResponse(req, { error: "stale_code" }, 400);
-    }
+      // The plaintext comes back from the browser because the server never kept
+      // it; only its hash is stored. But by the time this request lands, a
+      // claimed cron run may already have minted and mailed a NEW code for this
+      // row -- so the presented plaintext must be checked against what is
+      // actually stored right now, with the same normalisation the lookup path
+      // uses, before it is sent anywhere.
+      const digest = await hashCode(claimed.code_salt, code);
+      if (!timingSafeEqual(digest, claimed.code_hash)) {
+        return jsonResponse(req, { error: "stale_code" }, 400);
+      }
 
-    const result = await sendCodeEmail(claimed.email, claimed.display_name, code);
-    if (result.kind === "disabled") {
-      await releaseSendClaim(db, id, claimId);
-      return jsonResponse(req, { error: "email_disabled" }, 400);
-    }
-    if (result.kind !== "sent") {
-      await releaseSendClaim(db, id, claimId);
-      return jsonResponse(req, { error: "email_failed" }, 502);
-    }
+      const result = await sendCodeEmail(claimed.email, claimed.display_name, code);
+      if (result.kind === "disabled") {
+        return jsonResponse(req, { error: "email_disabled" }, 400);
+      }
+      if (result.kind !== "sent") {
+        return jsonResponse(req, { error: "email_failed" }, 502);
+      }
 
-    // Stamped only after the send succeeds, guarded by the claim this request
-    // took: if something re-minted the code while the mail was in flight, this
-    // writes zero rows and the row correctly stays pending for the new code.
-    const { error: stampError } = await db
-      .from("participants")
-      .update({ code_sent_at: new Date().toISOString(), send_claim_id: null, send_claimed_at: null })
-      .eq("id", id)
-      .eq("send_claim_id", claimId);
-    if (stampError) {
-      // The mail is already gone; failing the request would tell the operator
-      // to send again. Log it and report success -- the worst case is that this
-      // participant looks unsent and gets a fresh code later.
-      console.error("send_code stamp failed", stampError);
+      // Stamped only after the send succeeds, guarded by the claim this request
+      // took: if something re-minted the code while the mail was in flight, this
+      // writes zero rows and the row correctly stays pending for the new code.
+      const { error: stampError } = await db
+        .from("participants")
+        .update({ code_sent_at: new Date().toISOString(), send_claim_id: null, send_claimed_at: null })
+        .eq("id", id)
+        .eq("send_claim_id", claimId);
+      if (stampError) {
+        // The mail is already gone; failing the request would tell the operator
+        // to send again. Log it and report success -- the worst case is that this
+        // participant looks unsent and gets a fresh code later. The claim is
+        // still released below by the finally, so this row does not also
+        // disappear from the sender's view for five minutes on top of that.
+        console.error("send_code stamp failed", stampError);
+      }
+      return jsonResponse(req, { ok: true, email: claimed.email });
+    } finally {
+      await releaseSendClaim(db, id, claimId);
     }
-    return jsonResponse(req, { ok: true, email: claimed.email });
   }
 
   if (action === "regenerate_codes") {

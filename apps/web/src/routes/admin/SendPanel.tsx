@@ -56,6 +56,29 @@ const OUTCOME: Record<RunSummary["outcome"], (summary: RunSummary) => string> = 
     `다시 대상으로 만든 뒤, 자동 발송을 다시 켜주세요.`,
 };
 
+/**
+ * Looks up OUTCOME defensively rather than indexing it directly. OUTCOME's
+ * Record type stays exhaustive over every outcome known TODAY -- that is what
+ * makes the compiler refuse a future addition without matching copy, and it
+ * must not be weakened. But `summary` itself comes off the network as
+ * `RunSummary`, an assertion the compiler cannot verify at runtime: a stale
+ * bundle can still receive an outcome value the backend added later, which
+ * TypeScript's static exhaustiveness check has no way to see. Indexing
+ * OUTCOME directly on that value would then call `undefined` and take the
+ * whole panel down with it -- the wrong failure mode for a screen whose job
+ * is to say what happened. Casting only at this read site (not on OUTCOME
+ * itself) keeps the compile-time guarantee for known outcomes while still
+ * degrading gracefully for an unknown one.
+ */
+function outcomeText(summary: RunSummary): string {
+  const lookup = OUTCOME as Record<string, ((s: RunSummary) => string) | undefined>;
+  const render = lookup[summary.outcome];
+  if (render === undefined) {
+    return `처리 결과(${summary.outcome})를 표시할 수 없습니다. 새로고침 후 다시 확인해주세요.`;
+  }
+  return render(summary);
+}
+
 const MESSAGES: Record<string, string> = {
   email_disabled: "이메일 발송이 설정되어 있지 않습니다.",
   unauthorized: "다시 로그인해주세요.",
@@ -245,15 +268,38 @@ export function SendPanel({ token, participants, onChanged, onStatus }: SendPane
       {summary !== null && (
         <p className="type-body-sm mt-xs">
           {summary.sent}명 발송
-          {summary.failed > 0 && `, ${summary.failed}명 실패`}. {OUTCOME[summary.outcome](summary)}
+          {summary.failed > 0 && `, ${summary.failed}명 실패`}. {outcomeText(summary)}
         </p>
       )}
 
       {status.needsAttention > 0 && (
-        <p className="type-body-sm mt-xs text-mute">
-          {status.needsAttention}명은 발송이 반복 실패해 대기열에서 빠졌습니다.
-          이메일 주소를 확인하고 저장하거나 코드를 재발급하면 다시 대상이 됩니다.
-        </p>
+        status.armed ? (
+          <p className="type-body-sm mt-xs text-mute">
+            {status.needsAttention}명은 발송이 반복 실패해 대기열에서 빠졌습니다.
+            이메일 주소를 확인하고 저장하거나 코드를 재발급하면 다시 대상이 됩니다.
+          </p>
+        ) : (
+          // Durable, not transient: derived from `status` on every fetch, so
+          // it survives a page reload and a run triggered by cron with nobody
+          // watching -- unlike the `blocked` summary text above, which only
+          // ever renders after the admin presses 지금 실행 themselves. This is
+          // the only thing that tells an admin who arrives later that fixing
+          // addresses is not enough on its own: automatic sending has to be
+          // turned back on, or nothing goes out no matter how many rows get
+          // fixed. Bordered and coloured the same way the "email disabled but
+          // armed" warning above in this file already is, so it reads as
+          // equally urgent rather than blending into the quieter mt-xs lines.
+          <div className="mt-md rounded-md border border-caution bg-surface-card px-lg py-md">
+            <p className="type-body-sm-strong text-caution">
+              {status.needsAttention}명이 발송 실패가 반복되어 대기열에서 빠졌고, 자동
+              발송이 꺼져 있습니다.
+            </p>
+            <p className="type-body-sm mt-xs">
+              이메일 주소를 확인하고 저장하거나 코드를 재발급해 다시 대상으로 만든 뒤,
+              자동 발송을 다시 켜주세요.
+            </p>
+          </div>
+        )
       )}
 
       {status.needsAttentionSample.length > 0 && (
