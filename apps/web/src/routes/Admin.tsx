@@ -8,6 +8,7 @@ import {
 } from "../lib/adminSession";
 import { Button } from "../design/Button";
 import { Card } from "../design/Card";
+import { SkeletonRows } from "../design/SkeletonRows";
 import { TextInput } from "../design/TextInput";
 import { CsvTab } from "./admin/CsvTab";
 import { MatchesTab } from "./admin/MatchesTab";
@@ -40,9 +41,14 @@ export function Admin() {
 
   const [matches, setMatches] = useState<AdminMatchRow[]>([]);
   const [participants, setParticipants] = useState<AdminParticipantRow[]>([]);
+  // Seeded from the restored token: a reload with a stored session starts
+  // fetching immediately, so the very first paint must already be the
+  // placeholder rather than an empty table that fills in a moment later.
+  const [dataLoading, setDataLoading] = useState(() => loadAdminToken() !== null);
 
   const reload = useCallback(async () => {
     if (token === null) return;
+    setDataLoading(true);
     try {
       const m = await adminData<{ matches: AdminMatchRow[] }>(
         token,
@@ -65,6 +71,8 @@ export function Admin() {
       } else {
         setError(MESSAGES.network_error);
       }
+    } finally {
+      setDataLoading(false);
     }
   }, [token]);
 
@@ -136,7 +144,13 @@ export function Admin() {
     setToken(null);
     setMatches([]);
     setParticipants([]);
+    setDataLoading(false);
   }
+
+  // "Nothing on screen yet" rather than "no rows exist": an event with zero
+  // matches must still get the real empty state, not a permanent skeleton --
+  // dataLoading going false is what ends it.
+  const hasData = matches.length > 0 || participants.length > 0;
 
   return (
     <main className="mx-auto flex w-full max-w-[900px] flex-col px-lg py-xxl">
@@ -172,7 +186,14 @@ export function Admin() {
             </button>
           ))}
         </div>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-md">
+          {/* A refresh keeps the table on screen, so the only sign it is
+              happening belongs up here, out of the data's way. */}
+          {dataLoading && hasData && (
+            <span role="status" className="type-caption-md text-mute">
+              불러오는 중…
+            </span>
+          )}
           <Button
             type="button"
             variant="tertiary"
@@ -188,7 +209,10 @@ export function Admin() {
       )}
 
       <div className="mt-xl">
-        {tab === "matches" && (
+        {dataLoading && !hasData && (
+          <SkeletonRows rows={tab === "csv" ? 3 : 6} />
+        )}
+        {(!dataLoading || hasData) && tab === "matches" && (
           <MatchesTab
             token={token}
             matches={matches}
@@ -196,14 +220,14 @@ export function Admin() {
             onChanged={() => void reload()}
           />
         )}
-        {tab === "participants" && (
+        {(!dataLoading || hasData) && tab === "participants" && (
           <ParticipantsTab
             token={token}
             participants={participants}
             onChanged={() => void reload()}
           />
         )}
-        {tab === "csv" && (
+        {(!dataLoading || hasData) && tab === "csv" && (
           <CsvTab
             token={token}
             matchCount={matches.length}
