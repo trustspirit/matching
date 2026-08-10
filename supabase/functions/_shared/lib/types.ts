@@ -32,6 +32,12 @@ export interface ParsedPerson {
   gender: "M" | "F";
   contact: string | null;
   email: string | null;
+  /**
+   * 조 belongs to the person, not to the pairing: a match is assembled from two
+   * participants, and each brings their own. Null until the organizer assigns
+   * one.
+   */
+  team: string | null;
 }
 
 export interface ParsedMatch {
@@ -39,13 +45,6 @@ export interface ParsedMatch {
   timeRange: string;
   arriveBy: string;
   venue: string;
-  /**
-   * 조 is recorded per side: the organizer's sheet carries a 조 column next to
-   * each side's name columns, and the two can differ. A sheet with a single 조
-   * column puts the same value in both.
-   */
-  maleTeam: string | null;
-  femaleTeam: string | null;
   male: ParsedPerson;
   female: ParsedPerson;
 }
@@ -65,7 +64,7 @@ export interface AdminMatchRow {
   timeRange: string;
   arriveBy: string;
   venue: string;
-  /** Each side's own 조; the two can differ. */
+  /** Each participant's own 조, carried over from their participant record. */
   maleTeam: string | null;
   femaleTeam: string | null;
   maleId: string;
@@ -84,6 +83,8 @@ export interface AdminParticipantRow {
   gender: "M" | "F";
   contact: string | null;
   email: string | null;
+  /** The participant's 조, or null until one is assigned. */
+  team: string | null;
   /**
    * When this participant was emailed the code they currently hold, or null if
    * they never were. Minting a code clears it, so a null here always means the

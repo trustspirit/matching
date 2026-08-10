@@ -29,8 +29,6 @@ interface Draft {
   timeRange: string;
   arriveBy: string;
   venue: string;
-  maleTeam: string;
-  femaleTeam: string;
   maleId: string;
   femaleId: string;
 }
@@ -40,8 +38,6 @@ const BLANK: Draft = {
   timeRange: "",
   arriveBy: "",
   venue: "",
-  maleTeam: "",
-  femaleTeam: "",
   maleId: "",
   femaleId: "",
 };
@@ -52,22 +48,9 @@ function toDraft(row: AdminMatchRow): Draft {
     timeRange: row.timeRange,
     arriveBy: row.arriveBy,
     venue: row.venue,
-    maleTeam: row.maleTeam ?? "",
-    femaleTeam: row.femaleTeam ?? "",
     maleId: row.maleId,
     femaleId: row.femaleId,
   };
-}
-
-/**
- * One cell for both sides. Most pairs share a 조, and repeating it in every row
- * would bury the ones that do not -- so the split form only shows up when the
- * two sides actually differ.
- */
-function teamLabel(row: AdminMatchRow): string {
-  const male = row.maleTeam ?? "미정";
-  const female = row.femaleTeam ?? "미정";
-  return male === female ? male : `${male}/${female}`;
 }
 
 interface MatchesTabProps {
@@ -222,25 +205,6 @@ export function MatchesTab({
               className="type-body-md h-11 w-full rounded-md border border-ash bg-canvas px-md text-ink md:w-32"
             />
           </label>
-          {/* One box per side: the pair is not guaranteed to share a 조. */}
-          <label className="flex flex-col gap-xs">
-            <span className="type-caption-md text-mute">남성 조</span>
-            <input
-              value={draft.maleTeam}
-              placeholder="3조"
-              onChange={(e) => setDraft({ ...draft, maleTeam: e.target.value })}
-              className="type-body-md h-11 w-full rounded-md border border-ash bg-canvas px-md text-ink md:w-24"
-            />
-          </label>
-          <label className="flex flex-col gap-xs">
-            <span className="type-caption-md text-mute">여성 조</span>
-            <input
-              value={draft.femaleTeam}
-              placeholder="5조"
-              onChange={(e) => setDraft({ ...draft, femaleTeam: e.target.value })}
-              className="type-body-md h-11 w-full rounded-md border border-ash bg-canvas px-md text-ink md:w-24"
-            />
-          </label>
         </div>
 
         <div className="flex flex-col gap-md md:flex-row md:flex-wrap">
@@ -259,6 +223,11 @@ export function MatchesTab({
             onSelect={(id) => setDraft({ ...draft, femaleId: id })}
           />
         </div>
+
+        <p className="type-caption-md text-mute">
+          조는 참가자에게 딸린 정보입니다. 여기서는 등록된 참가자를 고르기만
+          하고, 조는 참가자 관리에서 수정해주세요.
+        </p>
 
         <div className="flex gap-sm">
           <Button type="button" onClick={() => void save()} loading={busy}>
@@ -338,11 +307,12 @@ export function MatchesTab({
           layout stacks each row into a self-labelling card. */}
       <div className="type-caption-md mt-lg hidden border-b border-hairline pb-xs text-mute md:flex md:gap-md">
         <span className="w-16">부</span>
-        <span className="w-16">조</span>
         <span className="w-32">시간</span>
         <span className="w-24">장소</span>
-        <span className="w-24">남성</span>
-        <span className="w-24">여성</span>
+        {/* 조 has no column of its own: it belongs to the person, so it is
+            printed in front of each name instead. */}
+        <span className="w-32">남성 (조)</span>
+        <span className="w-32">여성 (조)</span>
       </div>
 
       {/* The header carries the gap from the controls above, but it is hidden
@@ -374,7 +344,6 @@ export function MatchesTab({
                     {row.session}
                   </span>
                 </span>
-                <span className="text-ink md:w-20">{teamLabel(row)}</span>
               </div>
               <div className="flex items-center gap-md md:contents">
                 <span className="md:w-32">{row.timeRange}</span>
@@ -390,10 +359,19 @@ export function MatchesTab({
                   </span>
                 </span>
               </div>
+              {/* 조 sits with the person it belongs to: the pair can be in
+                  two different ones, and "몇조 누구 — 몇조 누구" is the only
+                  form that says which is whose. */}
               <div className="flex gap-xs md:contents">
-                <span className="text-ink md:w-24">{row.maleName}</span>
+                <span className="md:w-32">
+                  <span className="text-mute">{row.maleTeam ?? "미정"}</span>{" "}
+                  <span className="text-ink">{row.maleName}</span>
+                </span>
                 <span className="text-mute md:hidden">—</span>
-                <span className="text-ink md:w-24">{row.femaleName}</span>
+                <span className="md:w-32">
+                  <span className="text-mute">{row.femaleTeam ?? "미정"}</span>{" "}
+                  <span className="text-ink">{row.femaleName}</span>
+                </span>
               </div>
               <span className="flex gap-xs md:ml-auto md:shrink-0 md:gap-0">
                 <Button

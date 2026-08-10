@@ -130,7 +130,8 @@ Deno.test("lists matches with both participants joined", async () => {
   assertEquals(row.femaleName, "표여");
   assertEquals(row.session, "1부");
   assertEquals(row.venue, "소극장");
-  // The seeding CSV has one shared 조 column, so both sides get the same one.
+  // The seeding CSV has one shared 조 column, so both people get the same one.
+  // The listing reads it off each participant, not off the match.
   assertEquals(row.maleTeam, "3조");
   assertEquals(row.femaleTeam, "3조");
   assert(typeof row.id === "string" && row.id.length > 0);
@@ -184,8 +185,6 @@ Deno.test("creates a match and it appears in the listing", async () => {
     timeRange: "22:40~23:00",
     arriveBy: "22:40",
     venue: "골드",
-    maleTeam: "9조",
-    femaleTeam: "10조",
     maleId,
     femaleId,
   });
@@ -197,8 +196,6 @@ Deno.test("creates a match and it appears in the listing", async () => {
   const found = list.matches.find((m: { id: string }) => m.id === created.id);
   assert(found, "created match not in listing");
   assertEquals(found.venue, "골드");
-  assertEquals(found.maleTeam, "9조");
-  assertEquals(found.femaleTeam, "10조");
 });
 
 Deno.test("rejects a match with a blank time range", async () => {
@@ -208,8 +205,6 @@ Deno.test("rejects a match with a blank time range", async () => {
     timeRange: "",
     arriveBy: "21:50",
     venue: "소극장",
-    maleTeam: "1조",
-    femaleTeam: "1조",
     maleId,
     femaleId,
   });
@@ -228,8 +223,6 @@ Deno.test("updates a match and the change is visible in the listing", async () =
     timeRange: row.timeRange,
     arriveBy: row.arriveBy,
     venue: row.venue,
-    maleTeam: "7조",
-    femaleTeam: "8조",
     maleId: row.maleId,
     femaleId: row.femaleId,
   });
@@ -237,29 +230,33 @@ Deno.test("updates a match and the change is visible in the listing", async () =
 
   const after = await (await call("list_matches")).json();
   const updated = after.matches.find((m: { id: string }) => m.id === row.id);
-  assertEquals(updated.maleTeam, "7조");
-  assertEquals(updated.femaleTeam, "8조");
+  assertEquals(updated.venue, row.venue);
 });
 
-Deno.test("clears each 조 independently when it is sent empty", async () => {
-  const list = await (await call("list_matches")).json();
-  const row = list.matches.find(
-    (m: { maleTeam: string | null }) => m.maleTeam === "7조",
+Deno.test("edits a participant's 조 and every view follows", async () => {
+  const list = await (await call("list_participants")).json();
+  const row = list.participants.find(
+    (p: { displayName: string }) => p.displayName === "표남",
   );
   assert(row);
 
-  // Only the man's 조 is cleared: the two sides are stored separately, so
-  // blanking one must not take the other with it.
-  const res = await call("update_match", { ...row, maleTeam: "" });
+  const res = await call("update_participant", { ...row, team: "7조" });
   assertEquals(res.status, 200);
   await res.body?.cancel();
 
+  // 조 belongs to the person, so the match listing reads it back off them.
   const after = await (await call("list_matches")).json();
-  const updated = after.matches.find((m: { id: string }) => m.id === row.id);
+  const match = after.matches.find((m: { maleName: string }) => m.maleName === "표남");
+  assertEquals(match.maleTeam, "7조");
+
   // An empty 조 means "not assigned yet", stored as NULL so the participant
   // screen can show "조 배정 예정".
-  assertEquals(updated.maleTeam, null);
-  assertEquals(updated.femaleTeam, "8조");
+  const cleared = await call("update_participant", { ...row, team: "" });
+  assertEquals(cleared.status, 200);
+  await cleared.body?.cancel();
+  const reread = await (await call("list_participants")).json();
+  const person = reread.participants.find((p: { id: string }) => p.id === row.id);
+  assertEquals(person.team, null);
 });
 
 Deno.test("deletes a match without touching the participants", async () => {

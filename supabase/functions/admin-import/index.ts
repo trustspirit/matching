@@ -122,6 +122,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       gender: person.gender,
       contact: person.contact ?? "",
       email: person.email ?? "",
+      // Empty means "not assigned yet"; import_matches turns it back into NULL.
+      team: person.team ?? "",
       // Empty strings tell import_matches to keep the stored values.
       code_salt: salt,
       code_hash: hash,
@@ -141,9 +143,6 @@ Deno.serve(async (req: Request): Promise<Response> => {
     time_range: match.timeRange,
     arrive_by: match.arriveBy,
     venue: match.venue,
-    // Empty means "not assigned yet"; import_matches turns it back into NULL.
-    male_team: match.maleTeam ?? "",
-    female_team: match.femaleTeam ?? "",
     male_name: match.male.name,
     male_birthdate: match.male.birthdate,
     female_name: match.female.name,

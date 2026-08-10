@@ -43,6 +43,7 @@ interface Draft {
   gender: "M" | "F";
   contact: string;
   email: string;
+  team: string;
 }
 
 const BLANK: Draft = {
@@ -51,6 +52,7 @@ const BLANK: Draft = {
   gender: "M",
   contact: "",
   email: "",
+  team: "",
 };
 
 function toDraft(row: AdminParticipantRow): Draft {
@@ -60,6 +62,7 @@ function toDraft(row: AdminParticipantRow): Draft {
     gender: row.gender,
     contact: row.contact ?? "",
     email: row.email ?? "",
+    team: row.team ?? "",
   };
 }
 
@@ -330,6 +333,17 @@ export function ParticipantsTab({
             className="type-body-md h-11 w-full rounded-md border border-ash bg-canvas px-md text-ink md:w-56"
           />
         </label>
+        {/* 조 lives on the person: a match is two participants put together,
+            and each brings the 조 recorded here. */}
+        <label className="flex flex-col gap-xs">
+          <span className="type-caption-md text-mute">조</span>
+          <input
+            value={draft.team}
+            placeholder="21조"
+            onChange={(e) => setDraft({ ...draft, team: e.target.value })}
+            className="type-body-md h-11 w-full rounded-md border border-ash bg-canvas px-md text-ink md:w-24"
+          />
+        </label>
 
         <div className="flex gap-sm">
           <Button type="button" onClick={() => void save()} loading={busy}>
@@ -527,6 +541,7 @@ export function ParticipantsTab({
                 </span>
                 <span className="md:w-28">{p.birthdate}</span>
                 <span className="md:w-8">{p.gender === "M" ? "남" : "여"}</span>
+                <span className="text-mute md:w-16">{p.team ?? "미정"}</span>
               </div>
               <div className="flex flex-col gap-xxs md:contents">
                 {/* Dropped between md and lg. Everything else in the row is

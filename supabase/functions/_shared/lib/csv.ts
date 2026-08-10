@@ -324,6 +324,7 @@ export function parseMatchCsv(text: string): ParseResult {
         );
       }
       if (displayName !== "" && isIsoDate(birthdate)) {
+        const column = key === "male" ? teams.male : teams.female;
         people[key] = {
           name: normalizeName(displayName),
           displayName,
@@ -331,6 +332,7 @@ export function parseMatchCsv(text: string): ParseResult {
           gender,
           contact: blankToNull(cell(row, `${prefix} 연락처`)),
           email: blankToNull(cell(row, `${prefix} 이메일`)),
+          team: column === null ? null : blankToNull(cellAt(row, column.index)),
         };
       }
     }
@@ -343,10 +345,8 @@ export function parseMatchCsv(text: string): ParseResult {
     const validSession = session as Session;
     const timeRange = cell(row, "시간") || SESSION_TIME[validSession];
     const arriveBy = (timeRange.split("~")[0] ?? "").trim();
-    const teamOf = (side: TeamColumn | null): string | null =>
-      side === null ? null : blankToNull(cellAt(row, side.index));
-    const maleTeam = teamOf(teams.male);
-    const femaleTeam = teamOf(teams.female);
+    const maleTeam = people.male?.team ?? null;
+    const femaleTeam = people.female?.team ?? null;
     if (hasTeamColumn) {
       const blank: TeamColumn[] = [];
       if (maleTeam === null && teams.male !== null) blank.push(teams.male);
@@ -364,14 +364,53 @@ export function parseMatchCsv(text: string): ParseResult {
       timeRange,
       arriveBy,
       venue,
-      maleTeam,
-      femaleTeam,
       male: people.male!,
       female: people.female!,
     });
   }
 
+  // 조 belongs to the person, so the same person cannot bring two of them. The
+  // sheet has one row per pairing, and someone attending twice appears on two
+  // rows -- a mismatch between them is a data entry slip that would otherwise
+  // be resolved arbitrarily by whichever row was written last.
+  const conflicts = conflictingTeamErrors(matches);
+  if (conflicts.length > 0) {
+    // Unlike a row-level error, this one is about rows that each parsed fine,
+    // so there is no single row to drop -- the whole set is untrustworthy.
+    errors.push(...conflicts);
+    return { matches: [], errors, warnings };
+  }
+
   return { matches, errors, warnings };
+}
+
+/** Identity of a participant across rows, matching what import_matches keys on. */
+function personKey(person: ParsedPerson): string {
+  return `${person.name}|${person.birthdate}`;
+}
+
+function conflictingTeamErrors(matches: ParsedMatch[]): string[] {
+  const errors: string[] = [];
+  const seen = new Map<string, ParsedPerson>();
+  for (const match of matches) {
+    for (const person of [match.male, match.female]) {
+      const key = personKey(person);
+      const first = seen.get(key);
+      if (first === undefined) {
+        seen.set(key, person);
+        continue;
+      }
+      if (first.team === person.team) continue;
+      errors.push(
+        `'${person.displayName}'(${person.birthdate})의 조가 행마다 다릅니다 ` +
+          `("${first.team ?? "빈칸"}" vs "${person.team ?? "빈칸"}"). ` +
+          "조는 참가자마다 하나여야 합니다",
+      );
+      // Reported once per person: a third row would otherwise repeat it.
+      seen.set(key, person);
+    }
+  }
+  return errors;
 }
 
 /** Wraps a field in quotes when it contains a comma, quote, or newline. */

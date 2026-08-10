@@ -273,8 +273,10 @@ Deno.test("re-import with an unchanged code leaves an in-flight send claim alone
 Deno.test("merges an aliased name into a single participant", async () => {
   const aliasRow =
     "2부,,골드,1조,이승호- lee Seung ho,2003-03-25,010-2213-1840,tr@example.com,별칭여,2002-02-02,,";
+  // Same 조 on both rows: it belongs to the person, so the alias and the plain
+  // spelling -- one participant -- cannot disagree about it.
   const plainRow =
-    "1부,,실버,2조,이승호,2003-03-25,010-2213-1840,tr@example.com,다른여,2001-01-01,,";
+    "1부,,실버,1조,이승호,2003-03-25,010-2213-1840,tr@example.com,다른여,2001-01-01,,";
   const body = await (await upload(csv(aliasRow, plainRow))).json();
 
   // Two rows, but only three distinct people: one man and two women.
@@ -302,18 +304,37 @@ const HEADER_SPLIT_TEAM =
 const ROW_SPLIT_TEAM =
   "1부,,소극장,3조,조남,1999-01-02,010-0000-0011,c@example.com,5조,조여,1999-05-06,010-0000-0012,d@example.com";
 
-Deno.test("gives each side its own 조 when the CSV has two 조 columns", async () => {
+Deno.test("gives each person their own 조 when the CSV has two 조 columns", async () => {
   const body = await (await upload(
     [HEADER_SPLIT_TEAM, ROW_SPLIT_TEAM].join("\n"),
   )).json();
   assertEquals(body.matches, 1);
 
-  // Each participant is told their OWN 조, not the pair's -- the two differ
-  // here, which is exactly the case a single shared column used to lose.
+  // Each participant is told their OWN 조, not their partner's -- the two
+  // differ here, which is exactly the case a single shared column used to lose.
   const male = await (await lookup("조남", codeFor(body.codesCsv, "조남"))).json();
   assertEquals(male.matches[0].team, "3조");
   const female = await (await lookup("조여", codeFor(body.codesCsv, "조여"))).json();
   assertEquals(female.matches[0].team, "5조");
+
+  // And it is stored on the participant, not on the pairing.
+  assertEquals(
+    await sql("select team from participants where display_name = '조남';"),
+    "3조",
+  );
+});
+
+Deno.test("refuses a CSV that gives one person two different 조", async () => {
+  const second = ROW_SPLIT_TEAM
+    .replace(",3조,", ",9조,")
+    .replace("조여", "다른여")
+    .replace("1999-05-06", "1998-04-05");
+  const res = await upload(
+    [HEADER_SPLIT_TEAM, ROW_SPLIT_TEAM, second].join("\n"),
+  );
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assert(body.errors.some((e: string) => e.includes("조남")), body.errors.join(" "));
 });
 
 Deno.test("rejects a spreadsheet formula error instead of storing it as a 조", async () => {

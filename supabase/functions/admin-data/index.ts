@@ -53,6 +53,7 @@ interface ParticipantDbRow {
   gender: string;
   contact: string | null;
   email: string | null;
+  team: string | null;
   code_sent_at: string | null;
 }
 
@@ -94,7 +95,7 @@ async function listParticipants(
 ): Promise<AdminParticipantRow[] | null> {
   const { data, error } = await db
     .from("participants")
-    .select("id, display_name, birthdate, gender, contact, email, code_sent_at")
+    .select("id, display_name, birthdate, gender, contact, email, team, code_sent_at")
     .order("display_name")
     .returns<ParticipantDbRow[]>();
   if (error) {
@@ -108,6 +109,7 @@ async function listParticipants(
     gender: r.gender as "M" | "F",
     contact: r.contact,
     email: r.email,
+    team: r.team,
     codeSentAt: r.code_sent_at,
   }));
 }
@@ -213,6 +215,7 @@ interface ParticipantInput {
   gender: "M" | "F";
   contact: string | null;
   email: string | null;
+  team: string | null;
 }
 
 function readParticipantInput(payload: unknown): ParticipantInput | null {
@@ -231,6 +234,7 @@ function readParticipantInput(payload: unknown): ParticipantInput | null {
 
   const contact = str("contact").trim();
   const email = str("email").trim();
+  const team = str("team").trim();
   return {
     displayName,
     birthdate,
@@ -239,6 +243,9 @@ function readParticipantInput(payload: unknown): ParticipantInput | null {
     // CSV render a blank rather than an empty-looking value.
     contact: contact === "" ? null : contact,
     email: email === "" ? null : email,
+    // Empty means "not assigned yet"; the participant screen renders NULL as
+    // "조 배정 예정".
+    team: team === "" ? null : team,
   };
 }
 
@@ -252,8 +259,6 @@ interface MatchInput {
   timeRange: string;
   arriveBy: string;
   venue: string;
-  maleTeam: string;
-  femaleTeam: string;
   maleId: string;
   femaleId: string;
 }
@@ -273,8 +278,6 @@ function readMatchInput(payload: unknown): MatchInput | null {
     timeRange: str("timeRange").trim(),
     arriveBy: str("arriveBy").trim(),
     venue: str("venue").trim(),
-    maleTeam: str("maleTeam").trim(),
-    femaleTeam: str("femaleTeam").trim(),
     maleId: str("maleId"),
     femaleId: str("femaleId"),
   };
@@ -451,10 +454,6 @@ Deno.serve(async (req: Request): Promise<Response> => {
         time_range: input.timeRange,
         arrive_by: input.arriveBy,
         venue: input.venue,
-        // Empty means "not assigned yet"; the columns are nullable and the
-        // participant screen renders NULL as "조 배정 예정".
-        male_team: input.maleTeam === "" ? null : input.maleTeam,
-        female_team: input.femaleTeam === "" ? null : input.femaleTeam,
         male_id: input.maleId,
         female_id: input.femaleId,
       })
@@ -490,8 +489,6 @@ Deno.serve(async (req: Request): Promise<Response> => {
         time_range: input.timeRange,
         arrive_by: input.arriveBy,
         venue: input.venue,
-        male_team: input.maleTeam === "" ? null : input.maleTeam,
-        female_team: input.femaleTeam === "" ? null : input.femaleTeam,
         male_id: input.maleId,
         female_id: input.femaleId,
       })
@@ -556,6 +553,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         gender: input.gender,
         contact: input.contact,
         email: input.email,
+        team: input.team,
         code_salt: salt,
         code_hash: hash,
       })
@@ -606,6 +604,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       gender: input.gender,
       contact: input.contact,
       email: input.email,
+      team: input.team,
       // The admin editing this row is the explicit signal that the address
       // is worth trying again.
       send_attempts: 0,
