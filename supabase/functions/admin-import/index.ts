@@ -141,7 +141,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
     time_range: match.timeRange,
     arrive_by: match.arriveBy,
     venue: match.venue,
-    team: match.team ?? "",
+    // Empty means "not assigned yet"; import_matches turns it back into NULL.
+    male_team: match.maleTeam ?? "",
+    female_team: match.femaleTeam ?? "",
     male_name: match.male.name,
     male_birthdate: match.male.birthdate,
     female_name: match.female.name,

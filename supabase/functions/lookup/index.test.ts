@@ -37,6 +37,16 @@ Deno.test("returns both matches for a participant attending twice", async () => 
   assertEquals(sessions, ["1부", "2부"]);
 });
 
+Deno.test("returns each side its own 조 when the pair sits in different ones", async () => {
+  // Seed 1부/실버 pairs 엄태건 (1조) with 윤모습 (6조).
+  const male = await (await lookup("TESTA6")).json();
+  assertEquals(male.matches[0].team, "1조");
+
+  const female = await (await lookup("TESTA5")).json();
+  const silver = female.matches.find((m: { venue: string }) => m.venue === "실버");
+  assertEquals(silver.team, "6조");
+});
+
 Deno.test("returns null team when the team is undecided", async () => {
   const res = await lookup("TESTA4");
   const body = await res.json();

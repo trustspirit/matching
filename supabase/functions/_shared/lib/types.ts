@@ -12,6 +12,7 @@ export interface MatchView {
   timeRange: string;
   arriveBy: string;
   venue: string;
+  /** This participant's own 조 -- their partner may be in a different one. */
   team: string | null;
   partnerName: string;
 }
@@ -38,7 +39,13 @@ export interface ParsedMatch {
   timeRange: string;
   arriveBy: string;
   venue: string;
-  team: string | null;
+  /**
+   * 조 is recorded per side: the organizer's sheet carries a 조 column next to
+   * each side's name columns, and the two can differ. A sheet with a single 조
+   * column puts the same value in both.
+   */
+  maleTeam: string | null;
+  femaleTeam: string | null;
   male: ParsedPerson;
   female: ParsedPerson;
 }
@@ -58,7 +65,9 @@ export interface AdminMatchRow {
   timeRange: string;
   arriveBy: string;
   venue: string;
-  team: string | null;
+  /** Each side's own 조; the two can differ. */
+  maleTeam: string | null;
+  femaleTeam: string | null;
   maleId: string;
   maleName: string;
   maleBirthdate: string;
@@ -87,6 +96,7 @@ export interface AdminParticipantRow {
 export interface ImpactRow {
   session: Session;
   venue: string;
+  /** The 조 of the participant being deleted, not the pair's. */
   team: string | null;
   partnerName: string;
 }

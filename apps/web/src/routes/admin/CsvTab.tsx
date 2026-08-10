@@ -121,6 +121,10 @@ export function CsvTab({ token, matchCount, onImported }: CsvTabProps) {
             <p className="type-caption-md text-mute">
               컬럼: 부, 시간, 장소, 조, 남성 이름/생년월일/연락처/이메일,
               여성 이름/생년월일/연락처/이메일
+              <br />
+              조는 남성·여성 각각 1개까지 둘 수 있습니다. '조' 컬럼이 2개면
+              앞쪽이 남성, 뒤쪽이 여성으로 읽히고, '남성 조'/'여성 조'로
+              이름을 붙이면 순서와 무관하게 인식됩니다.
             </p>
           </div>
 

@@ -295,3 +295,34 @@ Deno.test("rejects a request with no file", async () => {
   await res.body?.cancel();
 });
 
+
+const HEADER_SPLIT_TEAM =
+  "부,시간,장소,조,남성 이름,남성 생년월일,남성 연락처,남성 이메일,조,여성 이름,여성 생년월일,여성 연락처,여성 이메일";
+
+const ROW_SPLIT_TEAM =
+  "1부,,소극장,3조,조남,1999-01-02,010-0000-0011,c@example.com,5조,조여,1999-05-06,010-0000-0012,d@example.com";
+
+Deno.test("gives each side its own 조 when the CSV has two 조 columns", async () => {
+  const body = await (await upload(
+    [HEADER_SPLIT_TEAM, ROW_SPLIT_TEAM].join("\n"),
+  )).json();
+  assertEquals(body.matches, 1);
+
+  // Each participant is told their OWN 조, not the pair's -- the two differ
+  // here, which is exactly the case a single shared column used to lose.
+  const male = await (await lookup("조남", codeFor(body.codesCsv, "조남"))).json();
+  assertEquals(male.matches[0].team, "3조");
+  const female = await (await lookup("조여", codeFor(body.codesCsv, "조여"))).json();
+  assertEquals(female.matches[0].team, "5조");
+});
+
+Deno.test("rejects a spreadsheet formula error instead of storing it as a 조", async () => {
+  const broken = ROW_SPLIT_TEAM.replace(",3조,", ",#NAME?,");
+  const res = await upload([HEADER_SPLIT_TEAM, broken].join("\n"));
+  assertEquals(res.status, 400);
+  const body = await res.json();
+  assert(body.errors.some((e: string) => e.includes("#NAME?")), body.errors.join(" "));
+
+  // Nothing was written: the previous import is still the live match set.
+  assertEquals(await sql("select count(*) from matches;"), "1");
+});

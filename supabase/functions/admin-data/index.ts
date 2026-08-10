@@ -36,7 +36,8 @@ interface MatchRpcRow {
   time_range: string;
   arrive_by: string;
   venue: string;
-  team: string | null;
+  male_team: string | null;
+  female_team: string | null;
   male_id: string;
   male_name: string;
   male_birthdate: string;
@@ -77,7 +78,8 @@ async function listMatches(db: SupabaseClient): Promise<AdminMatchRow[] | null> 
     timeRange: r.time_range,
     arriveBy: r.arrive_by,
     venue: r.venue,
-    team: r.team,
+    maleTeam: r.male_team,
+    femaleTeam: r.female_team,
     maleId: r.male_id,
     maleName: r.male_name,
     maleBirthdate: r.male_birthdate,
@@ -250,7 +252,8 @@ interface MatchInput {
   timeRange: string;
   arriveBy: string;
   venue: string;
-  team: string;
+  maleTeam: string;
+  femaleTeam: string;
   maleId: string;
   femaleId: string;
 }
@@ -270,7 +273,8 @@ function readMatchInput(payload: unknown): MatchInput | null {
     timeRange: str("timeRange").trim(),
     arriveBy: str("arriveBy").trim(),
     venue: str("venue").trim(),
-    team: str("team").trim(),
+    maleTeam: str("maleTeam").trim(),
+    femaleTeam: str("femaleTeam").trim(),
     maleId: str("maleId"),
     femaleId: str("femaleId"),
   };
@@ -447,9 +451,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
         time_range: input.timeRange,
         arrive_by: input.arriveBy,
         venue: input.venue,
-        // Empty means "not assigned yet"; the column is nullable and the
+        // Empty means "not assigned yet"; the columns are nullable and the
         // participant screen renders NULL as "조 배정 예정".
-        team: input.team === "" ? null : input.team,
+        male_team: input.maleTeam === "" ? null : input.maleTeam,
+        female_team: input.femaleTeam === "" ? null : input.femaleTeam,
         male_id: input.maleId,
         female_id: input.femaleId,
       })
@@ -485,7 +490,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
         time_range: input.timeRange,
         arrive_by: input.arriveBy,
         venue: input.venue,
-        team: input.team === "" ? null : input.team,
+        male_team: input.maleTeam === "" ? null : input.maleTeam,
+        female_team: input.femaleTeam === "" ? null : input.femaleTeam,
         male_id: input.maleId,
         female_id: input.femaleId,
       })

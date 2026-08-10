@@ -42,31 +42,32 @@ values
    'devsalt', encode(digest('devsaltTESTAC', 'sha256'), 'hex'));
 
 -- Case 1: ordinary 1부 pair with a team assigned
-insert into public.matches (session, time_range, arrive_by, venue, team, male_id, female_id)
-select '1부', '21:50~22:20', '21:50', '소극장', '3조', m.id, f.id
+insert into public.matches (session, time_range, arrive_by, venue, male_team, female_team, male_id, female_id)
+select '1부', '21:50~22:20', '21:50', '소극장', '3조', '3조', m.id, f.id
 from public.participants m, public.participants f
 where m.name = '김효준' and f.name = '정예림';
 
 -- Case 4: team is still undecided
-insert into public.matches (session, time_range, arrive_by, venue, team, male_id, female_id)
-select '2부', '22:40~23:00', '22:40', '골드', null, m.id, f.id
+insert into public.matches (session, time_range, arrive_by, venue, male_team, female_team, male_id, female_id)
+select '2부', '22:40~23:00', '22:40', '골드', null, null, m.id, f.id
 from public.participants m, public.participants f
 where m.name = '박한서' and f.name = '윤모습';
 
--- Case 3 continued: 윤모습's second appearance, in 1부 with a different man
-insert into public.matches (session, time_range, arrive_by, venue, team, male_id, female_id)
-select '1부', '21:50~22:20', '21:50', '실버', '1조', m.id, f.id
+-- Case 3 continued: 윤모습's second appearance, in 1부 with a different man.
+-- Also Case 7: the two sides sit in different 조, which the CSV allows.
+insert into public.matches (session, time_range, arrive_by, venue, male_team, female_team, male_id, female_id)
+select '1부', '21:50~22:20', '21:50', '실버', '1조', '6조', m.id, f.id
 from public.participants m, public.participants f
 where m.name = '엄태건' and f.name = '윤모습';
 
 -- Case 5 continued: the two 김시현s get different partners
-insert into public.matches (session, time_range, arrive_by, venue, team, male_id, female_id)
-select '1부', '21:50~22:20', '21:50', '마루', '2조', m.id, f.id
+insert into public.matches (session, time_range, arrive_by, venue, male_team, female_team, male_id, female_id)
+select '1부', '21:50~22:20', '21:50', '마루', '2조', '2조', m.id, f.id
 from public.participants m, public.participants f
 where m.name = '김시현' and m.birthdate = '2001-04-11' and f.name = '윤해서';
 
 -- Case 5 continued (second 김시현) and Case 2: ordinary 2부 pair with a team assigned
-insert into public.matches (session, time_range, arrive_by, venue, team, male_id, female_id)
-select '2부', '22:40~23:00', '22:40', '마루', '4조', m.id, f.id
+insert into public.matches (session, time_range, arrive_by, venue, male_team, female_team, male_id, female_id)
+select '2부', '22:40~23:00', '22:40', '마루', '4조', '4조', m.id, f.id
 from public.participants m, public.participants f
 where m.name = '김시현' and m.birthdate = '1995-09-07' and f.name = '김은해';

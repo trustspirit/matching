@@ -29,7 +29,8 @@ interface Draft {
   timeRange: string;
   arriveBy: string;
   venue: string;
-  team: string;
+  maleTeam: string;
+  femaleTeam: string;
   maleId: string;
   femaleId: string;
 }
@@ -39,7 +40,8 @@ const BLANK: Draft = {
   timeRange: "",
   arriveBy: "",
   venue: "",
-  team: "",
+  maleTeam: "",
+  femaleTeam: "",
   maleId: "",
   femaleId: "",
 };
@@ -50,10 +52,22 @@ function toDraft(row: AdminMatchRow): Draft {
     timeRange: row.timeRange,
     arriveBy: row.arriveBy,
     venue: row.venue,
-    team: row.team ?? "",
+    maleTeam: row.maleTeam ?? "",
+    femaleTeam: row.femaleTeam ?? "",
     maleId: row.maleId,
     femaleId: row.femaleId,
   };
+}
+
+/**
+ * One cell for both sides. Most pairs share a 조, and repeating it in every row
+ * would bury the ones that do not -- so the split form only shows up when the
+ * two sides actually differ.
+ */
+function teamLabel(row: AdminMatchRow): string {
+  const male = row.maleTeam ?? "미정";
+  const female = row.femaleTeam ?? "미정";
+  return male === female ? male : `${male}/${female}`;
 }
 
 interface MatchesTabProps {
@@ -208,12 +222,22 @@ export function MatchesTab({
               className="type-body-md h-11 w-full rounded-md border border-ash bg-canvas px-md text-ink md:w-32"
             />
           </label>
+          {/* One box per side: the pair is not guaranteed to share a 조. */}
           <label className="flex flex-col gap-xs">
-            <span className="type-caption-md text-mute">조</span>
+            <span className="type-caption-md text-mute">남성 조</span>
             <input
-              value={draft.team}
+              value={draft.maleTeam}
               placeholder="3조"
-              onChange={(e) => setDraft({ ...draft, team: e.target.value })}
+              onChange={(e) => setDraft({ ...draft, maleTeam: e.target.value })}
+              className="type-body-md h-11 w-full rounded-md border border-ash bg-canvas px-md text-ink md:w-24"
+            />
+          </label>
+          <label className="flex flex-col gap-xs">
+            <span className="type-caption-md text-mute">여성 조</span>
+            <input
+              value={draft.femaleTeam}
+              placeholder="5조"
+              onChange={(e) => setDraft({ ...draft, femaleTeam: e.target.value })}
               className="type-body-md h-11 w-full rounded-md border border-ash bg-canvas px-md text-ink md:w-24"
             />
           </label>
@@ -350,7 +374,7 @@ export function MatchesTab({
                     {row.session}
                   </span>
                 </span>
-                <span className="text-ink md:w-16">{row.team ?? "미정"}</span>
+                <span className="text-ink md:w-20">{teamLabel(row)}</span>
               </div>
               <div className="flex items-center gap-md md:contents">
                 <span className="md:w-32">{row.timeRange}</span>

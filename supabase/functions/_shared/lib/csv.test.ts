@@ -7,6 +7,14 @@ const HEADER =
 const ROW_1 =
   "1부,21:50~22:20,소극장,3조,김효준,2004-06-24,010-389-5611,konanok20@gmail.com,정예림,2004-03-04,010-3793-8478,yljun3064@gmail.com";
 
+// The organizer's real export: one 조 column per side, sitting next to that
+// side's name columns, both spelled just "조".
+const HEADER_2 =
+  "부,시간,장소,조,남성 이름,남성 생년월일,남성 연락처,남성 이메일,조,여성 이름,여성 생년월일,여성 연락처,여성 이메일";
+
+const ROW_2 =
+  "1부,21:50~22:20,소극장,3조,김효준,2004-06-24,010-389-5611,konanok20@gmail.com,5조,정예림,2004-03-04,010-3793-8478,yljun3064@gmail.com";
+
 describe("parseCsv", () => {
   it("splits plain rows on commas", () => {
     expect(parseCsv("a,b,c\n1,2,3")).toEqual([["a", "b", "c"], ["1", "2", "3"]]);
@@ -52,7 +60,9 @@ describe("parseMatchCsv", () => {
     expect(match.timeRange).toBe("21:50~22:20");
     expect(match.arriveBy).toBe("21:50");
     expect(match.venue).toBe("소극장");
-    expect(match.team).toBe("3조");
+    // A single 조 column applies to both sides of the pair.
+    expect(match.maleTeam).toBe("3조");
+    expect(match.femaleTeam).toBe("3조");
     expect(match.male.displayName).toBe("김효준");
     expect(match.male.name).toBe("김효준");
     expect(match.male.gender).toBe("M");
@@ -79,9 +89,60 @@ describe("parseMatchCsv", () => {
     const row = ROW_1.replace(",3조,", ",,");
     const result = parseMatchCsv(`${HEADER}\n${row}`);
     expect(result.errors).toEqual([]);
-    expect(result.matches[0]!.team).toBeNull();
+    expect(result.matches[0]!.maleTeam).toBeNull();
+    expect(result.matches[0]!.femaleTeam).toBeNull();
+    // One shared column means one thing is missing, so one warning.
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0]).toContain("2행");
+  });
+
+  it("reads a per-side 조 from each of the two 조 columns", () => {
+    const result = parseMatchCsv(`${HEADER_2}\n${ROW_2}`);
+    expect(result.errors).toEqual([]);
+    expect(result.matches[0]!.maleTeam).toBe("3조");
+    expect(result.matches[0]!.femaleTeam).toBe("5조");
+  });
+
+  it("warns per side when only one of the two 조 columns is blank", () => {
+    const row = ROW_2.replace(",5조,", ",,");
+    const result = parseMatchCsv(`${HEADER_2}\n${row}`);
+    expect(result.errors).toEqual([]);
+    expect(result.matches[0]!.maleTeam).toBe("3조");
+    expect(result.matches[0]!.femaleTeam).toBeNull();
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("여성 조");
+  });
+
+  it("prefers explicitly named 남성 조 / 여성 조 headers", () => {
+    const header = HEADER_2
+      .replace("조,남성 이름", "남성 조,남성 이름")
+      .replace("조,여성 이름", "여성 조,여성 이름");
+    const result = parseMatchCsv(`${header}\n${ROW_2}`);
+    expect(result.errors).toEqual([]);
+    expect(result.matches[0]!.maleTeam).toBe("3조");
+    expect(result.matches[0]!.femaleTeam).toBe("5조");
+  });
+
+  it("rejects a header with more than two 조 columns", () => {
+    const result = parseMatchCsv(`${HEADER_2},조\n${ROW_2},7조`);
+    expect(result.matches).toEqual([]);
+    expect(result.errors.join(" ")).toContain("조");
+  });
+
+  it("rejects a spreadsheet error value in 조 instead of storing it", () => {
+    const row = ROW_2.replace(",3조,", ",#NAME?,").replace(",5조,", ",#NAME?,");
+    const result = parseMatchCsv(`${HEADER_2}\n${row}`);
+    expect(result.matches).toEqual([]);
+    expect(result.errors[0]).toContain("2행");
+    expect(result.errors[0]).toContain("#NAME?");
+  });
+
+  it("rejects a spreadsheet error value in any column it reads", () => {
+    const row = ROW_1.replace("konanok20@gmail.com", "#REF!");
+    const result = parseMatchCsv(`${HEADER}\n${row}`);
+    expect(result.matches).toEqual([]);
+    expect(result.errors[0]).toContain("남성 이메일");
+    expect(result.errors[0]).toContain("#REF!");
   });
 
   it("normalizes an aliased name while keeping the original spelling", () => {
