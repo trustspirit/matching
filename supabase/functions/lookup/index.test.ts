@@ -37,14 +37,18 @@ Deno.test("returns both matches for a participant attending twice", async () => 
   assertEquals(sessions, ["1부", "2부"]);
 });
 
-Deno.test("returns each side its own 조 when the pair sits in different ones", async () => {
-  // Seed 1부/실버 pairs 엄태건 (1조) with 윤모습 (6조).
+Deno.test("labels the viewer's 조 and the partner's separately", async () => {
+  // Seed 1부/실버 pairs 엄태건 (1조) with 윤모습 (6조). Whoever logs in must see
+  // their own 조 as `team` and the other person's as `partnerTeam` -- the result
+  // card prints the partner's next to the partner's name.
   const male = await (await lookup("TESTA6")).json();
   assertEquals(male.matches[0].team, "1조");
+  assertEquals(male.matches[0].partnerTeam, "6조");
 
   const female = await (await lookup("TESTA5")).json();
   const silver = female.matches.find((m: { venue: string }) => m.venue === "실버");
   assertEquals(silver.team, "6조");
+  assertEquals(silver.partnerTeam, "1조");
 });
 
 Deno.test("returns null team when the team is undecided", async () => {

@@ -28,6 +28,12 @@ function MatchCard({ match }: { match: MatchView }) {
 
       <p className="type-caption-md mt-xl text-mute">상대방</p>
       <h2 className="type-display-lg mt-xxs text-ink">{match.partnerName}</h2>
+      {/* Sits with the partner's name on purpose. 조 belongs to a person, and
+          this card is about the other one -- a single unlabelled 조 in the rows
+          below reads as theirs no matter whose it is. */}
+      <p className={`type-body-sm mt-xxs ${match.partnerTeam === null ? "text-ash" : "text-mute"}`}>
+        {match.partnerTeam ?? "조 배정 예정"}
+      </p>
 
       <hr className="my-xl border-0 border-t border-hairline" />
 
@@ -35,7 +41,7 @@ function MatchCard({ match }: { match: MatchView }) {
         <InfoRow label="시간" value={match.timeRange} />
         <InfoRow label="장소" value={match.venue} />
         <InfoRow
-          label="조"
+          label="내 조"
           value={match.team ?? "조 배정 예정"}
           muted={match.team === null}
         />

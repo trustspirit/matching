@@ -12,8 +12,14 @@ export interface MatchView {
   timeRange: string;
   arriveBy: string;
   venue: string;
-  /** This participant's own 조 -- their partner may be in a different one. */
+  /** The viewer's own 조. */
   team: string | null;
+  /**
+   * The partner's 조. Separate from `team` because the two can differ, and the
+   * result card shows both -- an unlabelled single 조 next to the partner's
+   * name reads as the partner's whichever one it actually is.
+   */
+  partnerTeam: string | null;
   partnerName: string;
 }
 

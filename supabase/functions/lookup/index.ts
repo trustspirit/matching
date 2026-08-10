@@ -25,6 +25,7 @@ interface MatchRow {
   arrive_by: string;
   venue: string;
   team: string | null;
+  partner_team: string | null;
   partner_name: string;
 }
 
@@ -114,6 +115,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     arriveBy: row.arrive_by,
     venue: row.venue,
     team: row.team,
+    partnerTeam: row.partner_team,
     partnerName: row.partner_name,
   }));
 
