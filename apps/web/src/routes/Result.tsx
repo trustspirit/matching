@@ -28,22 +28,19 @@ function MatchCard({ match }: { match: MatchView }) {
 
       <p className="type-caption-md mt-xl text-mute">상대방</p>
       <h2 className="type-display-lg mt-xxs text-ink">{match.partnerName}</h2>
-      {/* Sits with the partner's name on purpose. 조 belongs to a person, and
-          this card is about the other one -- a single unlabelled 조 in the rows
-          below reads as theirs no matter whose it is. */}
-      <p className={`type-body-sm mt-xxs ${match.partnerTeam === null ? "text-ash" : "text-mute"}`}>
-        {match.partnerTeam ?? "조 배정 예정"}
-      </p>
 
       <hr className="my-xl border-0 border-t border-hairline" />
 
+      {/* Everything in this card describes the person named above it, 조
+          included. The viewer's own 조 is stated once at the top of the page
+          instead: repeating it here is what made the two read as one. */}
       <div className="flex flex-col gap-md">
         <InfoRow label="시간" value={match.timeRange} />
         <InfoRow label="장소" value={match.venue} />
         <InfoRow
-          label="내 조"
-          value={match.team ?? "조 배정 예정"}
-          muted={match.team === null}
+          label="조"
+          value={match.partnerTeam ?? "조 배정 예정"}
+          muted={match.partnerTeam === null}
         />
       </div>
 
@@ -67,10 +64,20 @@ export function Result() {
 
   if (result === null) return null;
 
+  // Every match carries the same value -- it is read off the participant, not
+  // the pairing -- so the first one that has it speaks for all of them.
+  const myTeam = result.matches.find((m) => m.team !== null)?.team ?? null;
+
   return (
     <main className="mx-auto flex w-full max-w-[480px] flex-col px-lg py-xxl">
       <h1 className="type-heading-xl text-ink">{result.displayName}님,</h1>
       <p className="type-display-lg text-ink">이렇게 만나요</p>
+      {/* 조 belongs to the person, so the viewer's own is the same on every
+          match. Stated once here, quietly, so the cards below are free to be
+          entirely about the other person. */}
+      {myTeam !== null && (
+        <p className="type-caption-md mt-sm text-mute">내 조 · {myTeam}</p>
+      )}
 
       <div className="mt-xxl flex flex-col gap-xl">
         {result.matches.length === 0
