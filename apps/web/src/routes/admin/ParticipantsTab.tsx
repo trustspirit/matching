@@ -700,10 +700,13 @@ export function ParticipantsTab({
                 <span className="text-mute md:w-16">{p.team ?? "미정"}</span>
               </div>
               <div className="flex flex-col gap-xxs md:contents">
-                {/* Dropped between md and lg. Everything else in the row is
+                {/* Dropped between md and xl. Everything else in the row is
                     either identity or the thing codes get sent to, and one
-                    column had to go for the buttons to fit on one line. */}
-                <span className="md:hidden lg:inline lg:w-36">
+                    column had to go for the buttons to fit on one line. It
+                    used to come back at lg; a fourth row action pushed that
+                    out to xl, where there is room for it and a readable
+                    address at the same time. */}
+                <span className="md:hidden xl:inline xl:w-36">
                   {p.contact ?? ""}
                 </span>
                 {/* Takes the leftover width so a long address shortens itself
