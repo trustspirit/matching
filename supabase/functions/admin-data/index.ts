@@ -1,12 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { handlePreflight, jsonResponse } from "../_shared/cors.ts";
 import { createServiceClient } from "../_shared/db.ts";
-import { hashCode, timingSafeEqual } from "../_shared/hash.ts";
-import { mintUniqueCode, type TakenCode } from "../_shared/mintCode.ts";
+import { timingSafeEqual } from "../_shared/hash.ts";
+import { mintUniqueCode } from "../_shared/mintCode.ts";
 import { buildCodesCsv } from "../_shared/lib/csv.ts";
-import { sendCodeEmail } from "../_shared/sendEmail.ts";
+import { sendCodeEmail, senderIsValidated } from "../_shared/sendEmail.ts";
 import { normalizeName } from "../_shared/lib/name.ts";
-import { isValidCode, normalizeCode } from "../_shared/lib/code.ts";
 import {
   bearerToken,
   issueSession,
@@ -151,16 +150,16 @@ async function participantImpact(
  * impossible to test a candidate code without hashing it against each stored
  * salt, and a code alone now identifies a participant.
  */
-async function takenCodes(db: SupabaseClient): Promise<TakenCode[] | null> {
+async function takenCodes(db: SupabaseClient): Promise<Set<string> | null> {
   const { data, error } = await db
     .from("participants")
-    .select("code_salt, code_hash")
-    .returns<{ code_salt: string; code_hash: string }[]>();
+    .select("code")
+    .returns<{ code: string }[]>();
   if (error) {
     console.error("taken code lookup failed", error);
     return null;
   }
-  return (data ?? []).map((r) => ({ salt: r.code_salt, hash: r.code_hash }));
+  return new Set((data ?? []).map((r) => r.code));
 }
 
 /**
@@ -542,7 +541,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
     const taken = await takenCodes(db);
     if (taken === null) return jsonResponse(req, { error: "server_error" }, 500);
-    const { code, salt, hash } = await mintUniqueCode(taken);
+    const code = mintUniqueCode(taken);
 
     const { data, error } = await db
       .from("participants")
@@ -554,8 +553,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         contact: input.contact,
         email: input.email,
         team: input.team,
-        code_salt: salt,
-        code_hash: hash,
+        code,
       })
       .select("id")
       .single<{ id: string }>();
@@ -567,7 +565,6 @@ Deno.serve(async (req: Request): Promise<Response> => {
       console.error("create_participant failed", error);
       return jsonResponse(req, { error: "server_error" }, 500);
     }
-    // The plaintext is returned exactly once; only its hash is stored.
     return jsonResponse(req, { id: data.id, code });
   }
 
@@ -665,25 +662,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   if (action === "send_code") {
     const id = (payload as { id?: unknown }).id;
-    const rawCode = (payload as { code?: unknown }).code;
-    if (typeof id !== "string" || id === "" || typeof rawCode !== "string" || rawCode === "") {
+    if (typeof id !== "string" || id === "") {
       return jsonResponse(req, { error: "invalid_request" }, 400);
     }
-    // F8: reject malformed input before touching the row at all. This is the
-    // same validator the lookup path already trusts, so no new alphabet check
-    // is introduced. Beyond defence in depth (sendCodeEmail also escapes the
-    // code), this rejects garbage early rather than claiming a row for a
-    // request that can only ever end in stale_code.
-    if (!isValidCode(rawCode)) {
-      return jsonResponse(req, { error: "invalid_request" }, 400);
-    }
-    const code = normalizeCode(rawCode);
 
-    // F2: this action used to take no claim at all, so a concurrent cron tick
-    // could re-mint this row's code while the admin's browser still held the
-    // old plaintext on screen -- mailing a code the database no longer holds.
-    // Claim first, exactly like claim_pending_codes: unclaimed, or a claim
-    // stale enough that its run must have died.
+    // The claim is still taken even though this no longer writes a code: it is
+    // what stops a cron tick and this request from mailing the same person
+    // twice. Unclaimed, or a claim stale enough that its run must have died --
+    // the same condition claim_pending_codes uses.
     const claimId = crypto.randomUUID();
     const staleBefore = new Date(Date.now() - CLAIM_STALE_MS).toISOString();
     const { data: claimedRows, error: claimError } = await db
@@ -691,9 +677,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
       .update({ send_claim_id: claimId, send_claimed_at: new Date().toISOString() })
       .eq("id", id)
       .or(`send_claim_id.is.null,send_claimed_at.lt.${staleBefore}`)
-      .select("display_name, email, code_salt, code_hash")
+      .select("display_name, email, code")
       .returns<
-        { display_name: string; email: string | null; code_salt: string; code_hash: string }[]
+        { display_name: string; email: string | null; code: string }[]
       >();
     if (claimError) {
       console.error("send_code claim failed", claimError);
@@ -717,7 +703,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
     // From here on this request holds the claim. Every exit from this point
     // -- an early return, the stamp write erroring, or an exception thrown by
-    // hashCode/sendCodeEmail/response building -- must hand it back, mirroring
+    // sendCodeEmail/response building -- must hand it back, mirroring
     // run()'s finally in send-codes/index.ts. Without this, a stamp error or a
     // thrown exception used to leak the claim: the row was then invisible to
     // both the sender and this action for the full five-minute stale window,
@@ -731,18 +717,15 @@ Deno.serve(async (req: Request): Promise<Response> => {
         return jsonResponse(req, { error: "no_email" }, 400);
       }
 
-      // The plaintext comes back from the browser because the server never kept
-      // it; only its hash is stored. But by the time this request lands, a
-      // claimed cron run may already have minted and mailed a NEW code for this
-      // row -- so the presented plaintext must be checked against what is
-      // actually stored right now, with the same normalisation the lookup path
-      // uses, before it is sent anywhere.
-      const digest = await hashCode(claimed.code_salt, code);
-      if (!timingSafeEqual(digest, claimed.code_hash)) {
-        return jsonResponse(req, { error: "stale_code" }, 400);
-      }
-
-      const result = await sendCodeEmail(claimed.email, claimed.display_name, code);
+      // The code comes from the row, not from the browser. It used to be sent
+      // back up by the caller because the server kept only a digest, which
+      // meant this action could be handed a code the database no longer held
+      // and had to reject it as stale. There is nothing left to go stale.
+      const result = await sendCodeEmail(
+        claimed.email,
+        claimed.display_name,
+        claimed.code,
+      );
       if (result.kind === "disabled") {
         return jsonResponse(req, { error: "email_disabled" }, 400);
       }
@@ -785,11 +768,21 @@ Deno.serve(async (req: Request): Promise<Response> => {
       return jsonResponse(req, { error: "invalid_request" }, 400);
     }
 
+    // Brevo answers 201 for a message from an unvalidated sender and only
+    // drops it later at the relay, so without this check a batch reports every
+    // participant as notified while none of them receive anything -- and being
+    // marked notified is what takes them out of the queue.
+    if (await senderIsValidated() === false) {
+      return jsonResponse(req, { error: "sender_not_validated" }, 400);
+    }
+
     const { data: rows, error: rowsError } = await db
       .from("participants")
-      .select("id, display_name, email")
+      .select("id, display_name, email, code")
       .in("id", ids)
-      .returns<{ id: string; display_name: string; email: string | null }[]>();
+      .returns<
+        { id: string; display_name: string; email: string | null; code: string }[]
+      >();
     if (rowsError) {
       console.error("send_selected_codes listing failed", rowsError);
       return jsonResponse(req, { error: "server_error" }, 500);
@@ -797,9 +790,6 @@ Deno.serve(async (req: Request): Promise<Response> => {
     if ((rows ?? []).length !== ids.length) {
       return jsonResponse(req, { error: "not_found" }, 404);
     }
-
-    const taken = await takenCodes(db);
-    if (taken === null) return jsonResponse(req, { error: "server_error" }, 500);
 
     const failures: { id: string; displayName: string; reason: string }[] = [];
     let sent = 0;
@@ -826,37 +816,20 @@ Deno.serve(async (req: Request): Promise<Response> => {
       }
 
       try {
-        const minted = await mintUniqueCode(taken);
-        taken.push({ salt: minted.salt, hash: minted.hash });
-
-        const { data: updatedRows, error: updateError } = await db
-          .from("participants")
-          .update({
-            code_salt: minted.salt,
-            code_hash: minted.hash,
-            code_sent_at: null,
-            send_attempts: 0,
-            send_last_error: null,
-          })
-          .eq("id", id)
-          .eq("send_claim_id", claimId)
-          .select("id");
-        if (updateError) {
-          console.error("send_selected_codes code update failed", updateError);
-          failures.push({ id, displayName: participant.display_name, reason: "server_error" });
-          continue;
-        }
-        if ((updatedRows ?? []).length === 0) {
-          failures.push({ id, displayName: participant.display_name, reason: "stale_code" });
-          continue;
-        }
-
         if (participant.email === null || participant.email === "") {
           failures.push({ id, displayName: participant.display_name, reason: "no_email" });
           continue;
         }
 
-        const result = await sendCodeEmail(participant.email, participant.display_name, minted.code);
+        // The stored code, not a fresh one. This used to mint and write a new
+        // code before sending, which meant a rejected send invalidated the
+        // participant's existing code and replaced it with one nobody could
+        // name -- the failure mode that silently un-coded 286 people.
+        const result = await sendCodeEmail(
+          participant.email,
+          participant.display_name,
+          participant.code,
+        );
         if (result.kind === "sent") {
           const { error: stampError } = await db
             .from("participants")
@@ -919,7 +892,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
     const { data, error } = await db
       .from("participants")
-      .select("id, display_name, gender, contact, email, code_salt, code_hash")
+      .select("id, display_name, gender, contact, email, code")
       .order("display_name")
       .returns<
         {
@@ -928,8 +901,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
           gender: string;
           contact: string | null;
           email: string | null;
-          code_salt: string;
-          code_hash: string;
+          code: string;
         }[]
       >();
     if (error) {
@@ -946,22 +918,20 @@ Deno.serve(async (req: Request): Promise<Response> => {
     // Participants who keep their code must stay in the guard: a new code must
     // not collide with one that is still in circulation.
     const targetIds = new Set(targets.map((p) => p.id));
-    const taken: TakenCode[] = all
-      .filter((p) => !targetIds.has(p.id))
-      .map((p) => ({ salt: p.code_salt, hash: p.code_hash }));
+    const taken = new Set(
+      all.filter((p) => !targetIds.has(p.id)).map((p) => p.code),
+    );
     const rows: CodeRow[] = [];
 
     for (const p of targets) {
-      const minted = await mintUniqueCode(taken);
-      taken.push({ salt: minted.salt, hash: minted.hash });
+      const code = mintUniqueCode(taken);
 
       const { error: writeError } = await db
         .from("participants")
         // code_sent_at goes with the code it described: the participant has
         // not been sent this new one.
         .update({
-          code_salt: minted.salt,
-          code_hash: minted.hash,
+          code,
           code_sent_at: null,
           send_attempts: 0,
           send_last_error: null,
@@ -982,11 +952,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
         gender: p.gender as "M" | "F",
         contact: p.contact,
         email: p.email,
-        code: minted.code,
+        code,
       });
     }
 
-    // The plaintext exists only in this response; the table keeps hashes.
     return jsonResponse(req, { count: rows.length, codesCsv: buildCodesCsv(rows) });
   }
 
@@ -998,13 +967,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
     const taken = await takenCodes(db);
     if (taken === null) return jsonResponse(req, { error: "server_error" }, 500);
-    const { code, salt, hash } = await mintUniqueCode(taken);
+    const code = mintUniqueCode(taken);
 
     const { data, error } = await db
       .from("participants")
       .update({
-        code_salt: salt,
-        code_hash: hash,
+        code,
         code_sent_at: null,
         send_attempts: 0,
         send_last_error: null,
@@ -1022,8 +990,63 @@ Deno.serve(async (req: Request): Promise<Response> => {
     if ((data ?? []).length === 0) {
       return jsonResponse(req, { error: "not_found" }, 404);
     }
-    // Returned once. The previous code is unrecoverable from this point.
     return jsonResponse(req, { code });
+  }
+
+  // One participant's current code, for the reveal control on their row.
+  //
+  // Deliberately not folded into list_participants: that response is fetched
+  // on every admin page load and carries the whole ~350-row table, so putting
+  // codes in it would ship every credential to the browser to answer a
+  // question the admin asks about one person.
+  if (action === "get_code") {
+    const id = (payload as { id?: unknown }).id;
+    if (typeof id !== "string" || id === "") {
+      return jsonResponse(req, { error: "invalid_request" }, 400);
+    }
+    const { data, error } = await db
+      .from("participants")
+      .select("code")
+      .eq("id", id)
+      .maybeSingle<{ code: string }>();
+    if (error) {
+      console.error("get_code failed", error);
+      return jsonResponse(req, { error: "server_error" }, 500);
+    }
+    if (data === null) return jsonResponse(req, { error: "not_found" }, 404);
+    return jsonResponse(req, { code: data.code });
+  }
+
+  // The whole roster with its current codes, as the same CSV an import
+  // produces. Before codes were stored this was impossible -- the plaintext
+  // existed only in the response that minted it, so losing that one download
+  // meant reissuing everyone. Reading it back changes nothing.
+  if (action === "list_codes") {
+    const { data, error } = await db
+      .from("participants")
+      .select("display_name, gender, contact, email, code")
+      .order("display_name")
+      .returns<
+        {
+          display_name: string;
+          gender: string;
+          contact: string | null;
+          email: string | null;
+          code: string;
+        }[]
+      >();
+    if (error) {
+      console.error("list_codes failed", error);
+      return jsonResponse(req, { error: "server_error" }, 500);
+    }
+    const rows: CodeRow[] = (data ?? []).map((p) => ({
+      displayName: p.display_name,
+      gender: p.gender as "M" | "F",
+      contact: p.contact,
+      email: p.email,
+      code: p.code,
+    }));
+    return jsonResponse(req, { count: rows.length, codesCsv: buildCodesCsv(rows) });
   }
 
   return jsonResponse(req, { error: "invalid_request" }, 400);

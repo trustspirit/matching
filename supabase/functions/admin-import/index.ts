@@ -8,7 +8,7 @@ import {
   isRateLimited,
 } from "../_shared/rateLimit.ts";
 import { bearerToken, verifySession } from "../_shared/session.ts";
-import { mintUniqueCode, type TakenCode } from "../_shared/mintCode.ts";
+import { mintUniqueCode } from "../_shared/mintCode.ts";
 import { buildCodesCsv, parseMatchCsv } from "../_shared/lib/csv.ts";
 import type { CodeRow, ParsedPerson } from "../_shared/lib/types.ts";
 
@@ -70,25 +70,21 @@ Deno.serve(async (req: Request): Promise<Response> => {
     people.set(personKey(match.female), match.female);
   }
 
-  // The salt/hash pairs come along so newly minted codes can be checked
-  // against every code already in use: a code alone identifies a participant
-  // now, so two people must never share one.
+  // The codes come along for two reasons: a newly minted one must not collide
+  // with a code already in use (a code alone identifies a participant, so two
+  // people sharing one would let each read the other's match), and a
+  // participant whose code is being kept still belongs in the downloaded CSV.
   const { data: existingRows, error: existingError } = await db
     .from("participants")
-    .select("name, birthdate, code_salt, code_hash")
-    .returns<
-      { name: string; birthdate: string; code_salt: string; code_hash: string }[]
-    >();
+    .select("name, birthdate, code")
+    .returns<{ name: string; birthdate: string; code: string }[]>();
   if (existingError) {
     return jsonResponse(req, { error: "server_error" }, 500);
   }
-  const existing = new Set(
-    (existingRows ?? []).map((row) => `${row.name}|${row.birthdate}`),
+  const existing = new Map(
+    (existingRows ?? []).map((row) => [`${row.name}|${row.birthdate}`, row.code]),
   );
-  const taken: TakenCode[] = (existingRows ?? []).map((row) => ({
-    salt: row.code_salt,
-    hash: row.code_hash,
-  }));
+  const taken = new Set((existingRows ?? []).map((row) => row.code));
 
   const participantPayload: Record<string, unknown>[] = [];
   const codeRows: CodeRow[] = [];
@@ -96,24 +92,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
   let updated = 0;
 
   for (const person of people.values()) {
-    const isNew = !existing.has(personKey(person));
+    const storedCode = existing.get(personKey(person));
+    const isNew = storedCode === undefined;
     if (isNew) created++;
     else updated++;
 
-    const needsCode = isNew || regenerateCodes;
-    let code: string | null = null;
-    let salt = "";
-    let hash = "";
-
-    if (needsCode) {
-      const minted = await mintUniqueCode(taken);
-      code = minted.code;
-      salt = minted.salt;
-      hash = minted.hash;
-      // Guard the rest of this batch against colliding with what was just
-      // minted, not only against what was already stored.
-      taken.push({ salt: minted.salt, hash: minted.hash });
-    }
+    const minted = isNew || regenerateCodes ? mintUniqueCode(taken) : null;
 
     participantPayload.push({
       name: person.name,
@@ -124,9 +108,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       email: person.email ?? "",
       // Empty means "not assigned yet"; import_matches turns it back into NULL.
       team: person.team ?? "",
-      // Empty strings tell import_matches to keep the stored values.
-      code_salt: salt,
-      code_hash: hash,
+      // An empty string tells import_matches to keep the stored code.
+      code: minted ?? "",
     });
 
     codeRows.push({
@@ -134,7 +117,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
       gender: person.gender,
       contact: person.contact,
       email: person.email,
-      code,
+      // Everyone's real code, not just the freshly minted ones. The CSV used
+      // to leave a blank for a participant whose code was kept, because the
+      // server could not read it back.
+      code: minted ?? storedCode ?? null,
     });
   }
 

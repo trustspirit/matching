@@ -7,6 +7,12 @@ interface CodeRevealProps {
   email: string | null;
   /** False when the mail provider is not configured on the server. */
   canSend: boolean;
+  /**
+   * True when this code was just minted. The code itself reads the same either
+   * way; what differs is that a fresh one has already invalidated whatever the
+   * participant was holding, which is worth saying out loud.
+   */
+  justIssued: boolean;
   sending: boolean;
   sent: boolean;
   sendError?: string;
@@ -15,15 +21,20 @@ interface CodeRevealProps {
 }
 
 /**
- * Shows a freshly issued code. The server stores only its hash, so this is the
- * one and only chance to read it -- hence the deliberately loud framing and
- * the explicit dismiss instead of an auto-hide.
+ * Shows one participant's code.
+ *
+ * This used to be the single chance to read a freshly minted code, because the
+ * server kept only its digest. Codes are stored as themselves now, so the
+ * panel is no longer a point of no return -- it can be reopened from the row
+ * at any time, and the urgency is reserved for a reissue, which does still
+ * invalidate the code already in the participant's hands.
  */
 export function CodeReveal({
   name,
   code,
   email,
   canSend,
+  justIssued,
   sending,
   sent,
   sendError,
@@ -31,13 +42,21 @@ export function CodeReveal({
   onDismiss,
 }: CodeRevealProps) {
   return (
-    <div className="mt-lg rounded-md border border-error bg-surface-card px-lg py-lg">
-      <p className="type-body-sm text-mute">{name}님의 새 코드</p>
-      <p className="type-display-lg mt-xs tracking-widest text-ink">{code}</p>
-      <p className="type-body-sm-strong mt-md text-error">
-        지금만 볼 수 있습니다. 서버에는 해시만 남아 다시 확인할 수 없습니다.
-        참가자에게 전달한 뒤 닫아주세요.
+    <div
+      className={`mt-lg rounded-md border bg-surface-card px-lg py-lg ${
+        justIssued ? "border-caution" : "border-hairline"
+      }`}
+    >
+      <p className="type-body-sm text-mute">
+        {name}님의 {justIssued ? "새 " : ""}코드
       </p>
+      <p className="type-display-lg mt-xs tracking-widest text-ink">{code}</p>
+      {justIssued && (
+        <p className="type-body-sm-strong mt-md text-caution">
+          이 참가자가 이전에 받은 코드는 방금 무효가 되었습니다. 새 코드를
+          전달해주세요.
+        </p>
+      )}
       {sendError !== undefined && (
         <p role="alert" className="type-body-sm mt-md text-error">{sendError}</p>
       )}
@@ -56,7 +75,7 @@ export function CodeReveal({
           </Button>
         )}
         <Button type="button" variant="secondary" onClick={onDismiss}>
-          전달했습니다
+          닫기
         </Button>
       </div>
 

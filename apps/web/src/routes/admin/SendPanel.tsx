@@ -18,7 +18,14 @@ interface SendStatus {
 }
 
 interface RunSummary {
-  outcome: "done" | "quota" | "time" | "partial" | "disarmed" | "blocked";
+  outcome:
+    | "done"
+    | "quota"
+    | "time"
+    | "partial"
+    | "disarmed"
+    | "blocked"
+    | "sender";
   sent: number;
   failed: number;
   // Populated (non-zero) only for "blocked": how many participants are stuck
@@ -29,11 +36,10 @@ interface RunSummary {
 
 /**
  * Every outcome except "done" means work is left over, and the admin has to
- * understand that waiting is correct -- otherwise they keep pressing the
- * button and mint a new code for everyone each time. Kept as functions
- * (rather than plain strings) because "blocked" has to report a real count,
- * and a Record keyed by every RunSummary["outcome"] means TypeScript refuses
- * to compile if a future outcome is added here without matching copy.
+ * understand what to do about it. Kept as functions (rather than plain
+ * strings) because "blocked" has to report a real count, and a Record keyed by
+ * every RunSummary["outcome"] means TypeScript refuses to compile if a future
+ * outcome is added here without matching copy.
  */
 const OUTCOME: Record<RunSummary["outcome"], (summary: RunSummary) => string> = {
   done: () => "전원 발송을 마쳤습니다. 자동 발송은 꺼졌습니다.",
@@ -54,6 +60,11 @@ const OUTCOME: Record<RunSummary["outcome"], (summary: RunSummary) => string> = 
     `더 보낼 대상이 없습니다. ${summary.blocked}명이 발송 실패가 반복되어 대기열에서 ` +
     `빠졌고, 자동 발송은 꺼졌습니다. 이메일 주소를 확인하고 저장하거나 코드를 재발급해 ` +
     `다시 대상으로 만든 뒤, 자동 발송을 다시 켜주세요.`,
+  // Brevo accepts mail from an unvalidated sender and then throws it away, so
+  // the run refuses to start rather than report a delivery that never happened.
+  sender: () =>
+    "발신 주소가 Brevo에 인증되어 있지 않아 한 통도 보내지 않았습니다. " +
+    "인증을 마친 뒤 다시 실행해주세요.",
 };
 
 /**
@@ -111,10 +122,9 @@ export function SendPanel({ token, participants, onChanged, onStatus }: SendPane
   const [busy, setBusy] = useState(false);
   const [summary, setSummary] = useState<RunSummary | null>(null);
   const [error, setError] = useState<string | undefined>();
-  // Arming is the one-click action Finding 1 fixes: it mints a NEW code for
-  // every pending participant within five minutes and cannot be recalled, so
-  // it gets a ConfirmDialog first. Disarming stays a single click -- turning
-  // automatic sending off is always safe.
+  // Arming puts mail in a few hundred inboxes within five minutes and cannot
+  // be recalled, so it gets a ConfirmDialog first. Disarming stays a single
+  // click -- turning automatic sending off is always safe.
   const [confirmingArm, setConfirmingArm] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -260,8 +270,8 @@ export function SendPanel({ token, participants, onChanged, onStatus }: SendPane
       {status.armed && (
         <p className="type-body-sm mt-xs text-mute">
           무장해 두면 남은 분들에게 자동으로 이어서 발송합니다. 하루 한도는 300통이고,
-          전원 발송이 끝나면 자동으로 꺼집니다. 서버는 코드를 해시로만 보관해
-          기존 코드를 다시 보낼 수 없으므로 각자에게 새 코드가 발급되어 나갑니다.
+          전원 발송이 끝나면 자동으로 꺼집니다. 각자가 이미 가진 코드를 그대로
+          보내므로 코드는 바뀌지 않습니다.
         </p>
       )}
 
@@ -328,9 +338,8 @@ export function SendPanel({ token, participants, onChanged, onStatus }: SendPane
             <>
               <p>
                 자동 발송을 켜면 미발송 대상 <strong>{status.pending}명</strong>에게 5분
-                안에 메일이 나갑니다. 서버는 코드를 해시로만 보관해 기존 코드를 다시 보낼
-                수 없으므로, 각자에게 <strong>새로 발급된 코드</strong>가 나가고{" "}
-                <strong>이미 나눠준 코드는 즉시 무효</strong>가 됩니다.
+                안에 메일이 나갑니다. 각자가 지금 가지고 있는 코드를 그대로 보내므로{" "}
+                <strong>코드는 바뀌지 않습니다</strong>.
               </p>
               <p className="mt-md">
                 하루 발송 한도는 300통이며, 남은 인원은 다음 날 자동으로 이어서

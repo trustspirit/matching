@@ -691,6 +691,120 @@ Deno.test("send_selected_codes sends only the selected participants", async () =
   assertEquals((await participantLogin("표남", maleBefore)).status, 200);
 });
 
+Deno.test("send_selected_codes sends the code the participant already has", async () => {
+  await seed();
+  const { femaleId } = await ids();
+  await armSending(false);
+  const before = await sql(`select code from participants where id = '${femaleId}';`);
+
+  let mailed = "";
+  await withBrevo(async (req) => {
+    mailed = String((await req.json()).htmlContent)
+      .match(/font-size:24px[^>]*>([23456789ABCDEFGHJKMNPQRSTVWXYZ]{6})</)?.[1] ?? "";
+    return new Response("{}", { status: 201 });
+  }, async () => {
+    const res = await call("send_selected_codes", { ids: [femaleId] });
+    assertEquals(res.status, 200);
+    assertEquals((await res.json()).sent, 1);
+  });
+
+  // The point of the whole change: sending is no longer a reissue, so a code
+  // handed out on paper survives the email that repeats it.
+  assertEquals(mailed, before);
+  assertEquals(
+    await sql(`select code from participants where id = '${femaleId}';`),
+    before,
+  );
+});
+
+Deno.test("a failed send leaves the participant's code alone", async () => {
+  await seed();
+  const { femaleId } = await ids();
+  await armSending(false);
+  const before = await sql(`select code from participants where id = '${femaleId}';`);
+
+  await withBrevo(
+    () => new Response("nope", { status: 500 }),
+    async () => {
+      const res = await call("send_selected_codes", { ids: [femaleId] });
+      assertEquals(res.status, 200);
+      const body = await res.json();
+      assertEquals(body.sent, 0);
+      assertEquals(body.failed, 1);
+    },
+  );
+
+  // The failure that started all of this: the code used to be replaced before
+  // the send, so a rejected message left the participant holding a code that
+  // no longer worked and a new one nobody had seen.
+  assertEquals(
+    await sql(`select code from participants where id = '${femaleId}';`),
+    before,
+  );
+  assertEquals(
+    await sql(`select code_sent_at is null from participants where id = '${femaleId}';`),
+    "t",
+  );
+});
+
+Deno.test("send_selected_codes refuses an unvalidated sender before sending anything", async () => {
+  await seed();
+  const { femaleId } = await ids();
+  await armSending(false);
+
+  let attempted = 0;
+  stubSender = "someone-else@example.com";
+  await withBrevo(() => {
+    attempted++;
+    return new Response("{}", { status: 201 });
+  }, async () => {
+    const res = await call("send_selected_codes", { ids: [femaleId] });
+    assertEquals(res.status, 400);
+    assertEquals((await res.json()).error, "sender_not_validated");
+  });
+
+  // Brevo would have answered 201 and then dropped the message, marking the
+  // participant notified for a mail they never got.
+  assertEquals(attempted, 0);
+  assertEquals(
+    await sql(`select code_sent_at is null from participants where id = '${femaleId}';`),
+    "t",
+  );
+});
+
+Deno.test("get_code reads a participant's current code back", async () => {
+  await seed();
+  const { femaleId } = await ids();
+  const reissued = await (await call("regenerate_code", { id: femaleId })).json();
+
+  const res = await call("get_code", { id: femaleId });
+  assertEquals(res.status, 200);
+  assertEquals((await res.json()).code, reissued.code);
+});
+
+Deno.test("get_code reports an unknown participant", async () => {
+  const res = await call("get_code", {
+    id: "00000000-0000-0000-0000-000000000000",
+  });
+  assertEquals(res.status, 404);
+  assertEquals((await res.json()).error, "not_found");
+});
+
+Deno.test("list_codes returns a CSV of working codes for everyone", async () => {
+  await seed();
+  const res = await call("list_codes");
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assert(body.codesCsv.startsWith("이름,성별,연락처,이메일,코드"));
+  assert(body.count >= 2, `expected the whole roster, got ${body.count}`);
+
+  const row = body.codesCsv
+    .split("\n")
+    .find((line: string) => line.startsWith("표여,"));
+  assert(row, "표여 missing from the code CSV");
+  assertEquals((await participantLogin("표여", row.split(",").at(-1)!)).status, 200);
+});
+
 Deno.test("send_selected_codes rejects while automatic sending is armed", async () => {
   await seed();
   const { femaleId } = await ids();
@@ -718,9 +832,8 @@ Deno.test("reports not_found when no id matches", async () => {
   assertEquals((await res.json()).error, "not_found");
 });
 
-Deno.test("send_code rejects a request without a code", async () => {
-  const id = await idOf("표여");
-  const res = await call("send_code", { id });
+Deno.test("send_code rejects a request without an id", async () => {
+  const res = await call("send_code");
   assertEquals(res.status, 400);
   assertEquals((await res.json()).error, "invalid_request");
 });
@@ -728,7 +841,6 @@ Deno.test("send_code rejects a request without a code", async () => {
 Deno.test("send_code reports an unknown participant", async () => {
   const res = await call("send_code", {
     id: "00000000-0000-0000-0000-000000000000",
-    code: "ABCDEF",
   });
   assertEquals(res.status, 404);
   assertEquals((await res.json()).error, "not_found");
@@ -744,7 +856,7 @@ Deno.test("send_code refuses a participant with no email", async () => {
     email: "",
   })).json();
 
-  const res = await call("send_code", { id: created.id, code: created.code });
+  const res = await call("send_code", { id: created.id });
   assertEquals(res.status, 400);
   // Checked before the provider is called: no point spending a send on an
   // address that does not exist.
@@ -757,6 +869,17 @@ Deno.test("send_code refuses a participant with no email", async () => {
  * env var crossing the process boundary -- same technique as
  * send-codes/index.test.ts's withBrevo.
  */
+/**
+ * The address the deployed function is configured to send from, read from the
+ * same supabase/functions/.env the container loads (package.json passes it
+ * through). The sender stub has to echo it back or the validation guard sees
+ * a mismatch and refuses every send.
+ */
+const SENDER = Deno.env.get("BREVO_SENDER_EMAIL") ?? "noreply@example.com";
+
+/** Set by a test that wants the guard to see an unvalidated From address. */
+let stubSender = SENDER;
+
 async function withBrevo(
   handler: (req: Request) => Response | Promise<Response>,
   body: () => Promise<void>,
@@ -764,11 +887,22 @@ async function withBrevo(
   const controller = new AbortController();
   const server = Deno.serve(
     { port: 8799, signal: controller.signal, onListen: () => {} },
-    handler,
+    (req) => {
+      // Not a send: answered here so it never reaches a handler that is
+      // counting or inspecting messages.
+      if (new URL(req.url).pathname.endsWith("/v3/senders")) {
+        return new Response(
+          JSON.stringify({ senders: [{ id: 1, email: stubSender, active: true }] }),
+          { status: 200 },
+        );
+      }
+      return handler(req);
+    },
   );
   try {
     await body();
   } finally {
+    stubSender = SENDER;
     controller.abort();
     await server.finished;
   }
@@ -788,7 +922,7 @@ async function armSending(armed: boolean): Promise<void> {
   ).body?.cancel();
 }
 
-Deno.test("send_code rejects a code that no longer matches what is stored (F2 stale)", async () => {
+Deno.test("send_code mails whatever the row holds now, not what the screen showed", async () => {
   await ensureAbsent("스테일유저");
   const created = await (await call("create_participant", {
     displayName: "스테일유저",
@@ -797,28 +931,29 @@ Deno.test("send_code rejects a code that no longer matches what is stored (F2 st
     contact: "",
     email: "stale@example.com",
   })).json();
-  const shownCode = created.code;
 
-  // Stands in for a concurrent cron tick reissuing this participant's code
-  // between the moment the admin's browser fetched shownCode and the moment
-  // they click send.
+  // Stands in for a concurrent reissue between the moment the admin's browser
+  // read the code and the moment they click send. This used to be rejected as
+  // stale_code, because the browser posted the code up and it no longer
+  // matched. The server reads the code itself now, so the send simply carries
+  // the current one.
   const reissued = await (await call("regenerate_code", { id: created.id })).json();
-  assert(reissued.code !== shownCode);
+  assert(reissued.code !== created.code);
 
-  const res = await call("send_code", { id: created.id, code: shownCode });
-  assertEquals(res.status, 400);
-  assertEquals((await res.json()).error, "stale_code");
+  let mailed = "";
+  await withBrevo(async (req) => {
+    const body = await req.json();
+    mailed = String(body.htmlContent)
+      .match(/font-size:24px[^>]*>([23456789ABCDEFGHJKMNPQRSTVWXYZ]{6})</)?.[1] ?? "";
+    return new Response("{}", { status: 201 });
+  }, async () => {
+    const res = await call("send_code", { id: created.id });
+    assertEquals(res.status, 200);
+    await res.body?.cancel();
+  });
 
-  // The claim this request took must be released, not left behind, and
-  // nothing may have been sent under either code.
-  assertEquals(
-    await sql(`select send_claim_id is null from participants where id = '${created.id}';`),
-    "t",
-  );
-  assertEquals(
-    await sql(`select code_sent_at is null from participants where id = '${created.id}';`),
-    "t",
-  );
+  assertEquals(mailed, reissued.code);
+  assertEquals((await participantLogin("스테일유저", reissued.code)).status, 200);
 });
 
 Deno.test("send_code refuses while another run holds a live claim (F2 in-progress)", async () => {
@@ -837,7 +972,7 @@ Deno.test("send_code refuses while another run holds a live claim (F2 in-progres
     `update participants set send_claim_id = gen_random_uuid(), send_claimed_at = now() where id = '${created.id}';`,
   );
 
-  const res = await call("send_code", { id: created.id, code: created.code });
+  const res = await call("send_code", { id: created.id });
   assertEquals(res.status, 409);
   assertEquals((await res.json()).error, "send_in_progress");
 
@@ -869,7 +1004,7 @@ Deno.test("send_code reclaims a claim older than five minutes and sends normally
   await withBrevo(
     () => new Response("{}", { status: 201 }),
     async () => {
-      const res = await call("send_code", { id: created.id, code: created.code });
+      const res = await call("send_code", { id: created.id });
       assertEquals(res.status, 200);
       const body = await res.json();
       assertEquals(body.ok, true);
@@ -918,7 +1053,7 @@ Deno.test("send_code releases its claim even when the stamp write errors (R2)", 
     await withBrevo(
       () => new Response("{}", { status: 201 }),
       async () => {
-        const res = await call("send_code", { id: created.id, code: created.code });
+        const res = await call("send_code", { id: created.id });
         // The mail already went out (the stub above accepted it), so the
         // request still reports success even though the write behind it
         // failed -- send_code's own documented behaviour when stamping fails.
@@ -975,7 +1110,7 @@ Deno.test("send_code releases its claim when sendCodeEmail throws (R2)", async (
         { status: 500 },
       ),
     async () => {
-      const res = await call("send_code", { id: created.id, code: created.code });
+      const res = await call("send_code", { id: created.id });
       // Nothing here catches the exception, so it reaches Deno.serve's
       // default handler and comes back as a plain 500 rather than one of
       // send_code's own { error } bodies. What matters is not this status
@@ -995,7 +1130,7 @@ Deno.test("send_code releases its claim when sendCodeEmail throws (R2)", async (
   );
 });
 
-Deno.test("send_code rejects a malformed code before touching the row (F8)", async () => {
+Deno.test("send_code ignores a code supplied by the caller (F8)", async () => {
   await ensureAbsent("포맷불량");
   const created = await (await call("create_participant", {
     displayName: "포맷불량",
@@ -1005,17 +1140,28 @@ Deno.test("send_code rejects a malformed code before touching the row (F8)", asy
     email: "badformat@example.com",
   })).json();
 
-  const res = await call("send_code", {
-    id: created.id,
-    code: "<img src=x onerror=alert(1)>",
+  // This action used to take the code from the request body and had to
+  // validate it before putting it in an email. It reads the row instead now,
+  // so anything sent under this name is inert -- the assertion is that it
+  // reaches neither the message nor the database.
+  let html = "";
+  await withBrevo(async (req) => {
+    html = String((await req.json()).htmlContent);
+    return new Response("{}", { status: 201 });
+  }, async () => {
+    const res = await call("send_code", {
+      id: created.id,
+      code: "<img src=x onerror=alert(1)>",
+    });
+    assertEquals(res.status, 200);
+    await res.body?.cancel();
   });
-  assertEquals(res.status, 400);
-  assertEquals((await res.json()).error, "invalid_request");
 
-  // Rejected before any claim was taken.
+  assert(!html.includes("onerror"), "caller-supplied code reached the message");
+  assert(html.includes(created.code), "the stored code was not the one sent");
   assertEquals(
-    await sql(`select send_claim_id is null from participants where id = '${created.id}';`),
-    "t",
+    await sql(`select code from participants where id = '${created.id}';`),
+    created.code,
   );
 });
 

@@ -2,8 +2,13 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { handlePreflight, jsonResponse } from "../_shared/cors.ts";
 import { createServiceClient } from "../_shared/db.ts";
 import { timingSafeEqual } from "../_shared/hash.ts";
-import { mintUniqueCode, type TakenCode } from "../_shared/mintCode.ts";
-import { emailEnabled, fetchQuota, nextResetAt, sendCodeEmail } from "../_shared/sendEmail.ts";
+import {
+  emailEnabled,
+  fetchQuota,
+  nextResetAt,
+  sendCodeEmail,
+  senderIsValidated,
+} from "../_shared/sendEmail.ts";
 import { bearerToken, verifySession } from "../_shared/session.ts";
 
 /** A row past this many consecutive failures leaves the queue. */
@@ -37,8 +42,19 @@ const STAMP_RETRIES = 3;
  * still have no code -- a human has to fix an address or reissue a code
  * before that row is reachable again. Collapsing the two would make an outage
  * that ran every row to the ceiling look identical to a clean finish.
+ *
+ * "sender" is the configuration equivalent: nothing was attempted because the
+ * From address is not one Brevo will accept, which no amount of retrying
+ * fixes.
  */
-type Outcome = "done" | "quota" | "time" | "disarmed" | "partial" | "blocked";
+type Outcome =
+  | "done"
+  | "quota"
+  | "time"
+  | "disarmed"
+  | "partial"
+  | "blocked"
+  | "sender";
 
 interface RunSummary {
   outcome: Outcome;
@@ -203,6 +219,7 @@ interface Claimed {
   id: string;
   display_name: string;
   email: string;
+  code: string;
 }
 
 async function claim(
@@ -269,23 +286,6 @@ async function blockedCount(db: SupabaseClient): Promise<number | null> {
     return null;
   }
   return count ?? 0;
-}
-
-/**
- * Every stored code, so a freshly minted one cannot collide. Each row carries
- * its own salt, so uniqueness cannot be a database constraint -- the candidate
- * has to be hashed against every salt. See mintCode.ts.
- */
-async function loadTakenCodes(db: SupabaseClient): Promise<TakenCode[] | null> {
-  const { data, error } = await db
-    .from("participants")
-    .select("code_salt, code_hash")
-    .returns<{ code_salt: string; code_hash: string }[]>();
-  if (error) {
-    console.error("taken code listing failed", error);
-    return null;
-  }
-  return (data ?? []).map((r) => ({ salt: r.code_salt, hash: r.code_hash }));
 }
 
 /** Hands every row this run still holds back to the queue. */
@@ -394,44 +394,25 @@ async function recordFailure(
   if (error) console.error("failure record failed", error);
 }
 
-type OneResult = "sent" | "failed" | "cancelled" | "quota" | "time";
+type OneResult = "sent" | "failed" | "quota" | "time";
 
+/**
+ * Mails a participant the code the row already holds.
+ *
+ * This used to mint a new code and write it before sending, because the
+ * server kept only a digest and so could not name the code it had issued. The
+ * cost was that a rejected send left the participant holding a code nobody
+ * could name: the old one was already overwritten, and the new one existed
+ * only in a message that never arrived. Sending the stored code makes a
+ * failure cost nothing but a retry.
+ */
 async function sendOne(
   db: SupabaseClient,
   runId: string,
   person: Claimed,
-  taken: TakenCode[],
   deadline: number,
 ): Promise<OneResult> {
-  const minted = await mintUniqueCode(taken);
-  taken.push({ salt: minted.salt, hash: minted.hash });
-
-  // Guarded by the claim. If anything re-minted this person's code since we
-  // claimed them, send_claim_id no longer matches, this writes zero rows, and
-  // the send is abandoned -- the newer request wins.
-  const { data: written, error: writeError } = await db
-    .from("participants")
-    .update({
-      code_salt: minted.salt,
-      code_hash: minted.hash,
-      code_sent_at: null,
-    })
-    .eq("id", person.id)
-    .eq("send_claim_id", runId)
-    .select("id");
-  if (writeError) {
-    console.error("code write failed", writeError);
-    // Without this, send_attempts never moves: the row is retried forever,
-    // run() never sees an empty batch, the schedule never disarms, and
-    // send_last_error stays null so the admin's needs-attention list never
-    // names this participant either. recordFailure leaves the claim in
-    // place; run()'s finally releases it, same as every other failure path.
-    await recordFailure(db, runId, person.id, `code write failed: ${writeError.message}`);
-    return "failed";
-  }
-  if ((written ?? []).length === 0) return "cancelled";
-
-  let result = await sendCodeEmail(person.email, person.display_name, minted.code);
+  let result = await sendCodeEmail(person.email, person.display_name, person.code);
 
   if (result.kind === "throttled") {
     const waitMs = result.retryAfterSec * 1000;
@@ -439,7 +420,7 @@ async function sendOne(
     // time left to send. Stop now and let the next cron slot pick this up.
     if (Date.now() + waitMs >= deadline) return "time";
     await new Promise((resolve) => setTimeout(resolve, waitMs));
-    result = await sendCodeEmail(person.email, person.display_name, minted.code);
+    result = await sendCodeEmail(person.email, person.display_name, person.code);
     // Brevo sets the delay, so a second throttle could ask for anything. One
     // retry is the cap; the queue is durable and cron comes back.
     if (result.kind === "throttled") return "time";
@@ -464,12 +445,17 @@ async function sendOne(
 async function run(db: SupabaseClient): Promise<RunSummary | null> {
   const deadline = Date.now() + TIME_BUDGET_MS;
   const runId = crypto.randomUUID();
-  const taken = await loadTakenCodes(db);
-  if (taken === null) return null;
 
-  // Ask before spending. Discovering the wall by taking a 402 costs a freshly
-  // minted code that then has to be discarded, and it happens once per probe
-  // for as long as the allowance stays empty.
+  // Brevo accepts a message from an unvalidated sender with a 201 and then
+  // discards it at the relay, so nothing in the send path can tell that the
+  // mail died. Left unchecked, a whole run reports success while every
+  // participant gets nothing. One request up front closes that gap.
+  if (await senderIsValidated() === false) {
+    return { outcome: "sender", sent: 0, failed: 0, blocked: 0 };
+  }
+
+  // Ask before spending. Taking a 402 to discover the wall costs a round trip
+  // per participant for as long as the allowance stays empty.
   const quota = await fetchQuota();
   if (quota !== null && quota.credits <= 0) {
     // The reset hour is the account's own midnight, which the same response
@@ -532,7 +518,7 @@ async function run(db: SupabaseClient): Promise<RunSummary | null> {
           await release(db, runId);
           return { outcome: "time", sent, failed, blocked: 0 };
         }
-        const result = await sendOne(db, runId, person, taken, deadline);
+        const result = await sendOne(db, runId, person, deadline);
         if (result === "sent") {
           sent++;
         } else if (result === "failed") {
@@ -548,7 +534,6 @@ async function run(db: SupabaseClient): Promise<RunSummary | null> {
           await release(db, runId);
           return { outcome: "time", sent, failed, blocked: 0 };
         }
-        // "cancelled" is neither: nothing was sent and nothing went wrong.
       }
     }
   } finally {

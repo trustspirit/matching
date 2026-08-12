@@ -1,6 +1,5 @@
 import { handlePreflight, jsonResponse } from "../_shared/cors.ts";
 import { createServiceClient } from "../_shared/db.ts";
-import { DUMMY_SALT, hashCode, timingSafeEqual } from "../_shared/hash.ts";
 import {
   clientIp,
   getIpSalt,
@@ -15,8 +14,6 @@ import type { LookupResponse, MatchView } from "../_shared/lib/types.ts";
 interface ParticipantRow {
   id: string;
   display_name: string;
-  code_salt: string;
-  code_hash: string;
 }
 
 interface MatchRow {
@@ -62,35 +59,31 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
   const code = normalizeCode(rawCode);
 
-  // Every participant is a candidate: the per-row salt means a code cannot be
-  // looked up by hash, so the only way to find its owner is to hash the input
-  // against each stored salt. At ~350 participants that is ~350 SHA-256 per
-  // login, which is microseconds. import_matches guarantees the codes are
-  // unique, so at most one row can match.
-  const { data: candidates, error: candidatesError } = await db
+  // A single indexed lookup. This used to read every participant and hash the
+  // input once per row, because a per-row salt made the stored digest
+  // unsearchable; the code is stored as itself now, and the unique index means
+  // at most one row can match.
+  //
+  // That also drops the constant-time comparison this path used to do. It was
+  // guarding against an attacker measuring which stored code an input got
+  // closest to, which no longer has anything to measure: the only signal left
+  // is whether a code exists, and guessing one out of 7.29e8 is what the IP
+  // rate limiter above is for.
+  const { data: matched, error: lookupError } = await db
     .from("participants")
-    .select("id, display_name, code_salt, code_hash")
-    .returns<ParticipantRow[]>();
+    .select("id, display_name")
+    .eq("code", code)
+    .maybeSingle<ParticipantRow>();
 
-  if (candidatesError) {
+  if (lookupError) {
     // A DB fault here must not be mistaken for "wrong code": falling through
     // to invalid_credentials would record a failed attempt against the
     // participant's IP and could trip the rate limiter during an outage.
-    console.error("participant lookup failed", candidatesError);
+    console.error("participant lookup failed", lookupError);
     return jsonResponse(req, { error: "server_error" }, 500);
   }
 
-  let matched: ParticipantRow | null = null;
-  for (const candidate of candidates ?? []) {
-    const digest = await hashCode(candidate.code_salt, code);
-    // No early break: hashing every row keeps the response time independent of
-    // where in the table the match sits.
-    if (timingSafeEqual(digest, candidate.code_hash)) matched = candidate;
-  }
-
   if (matched === null) {
-    // Burn one hash so an unknown name costs the same as a wrong code.
-    await hashCode(DUMMY_SALT, code);
     if (ipHash !== null) {
       await recordAttempt(db, ipHash, false, PARTICIPANT_POLICY);
     }

@@ -261,6 +261,62 @@ export async function fetchQuota(): Promise<QuotaInfo | null> {
   };
 }
 
+const BREVO_SENDERS_URL = "https://api.brevo.com/v3/senders";
+
+function sendersUrl(): string {
+  return Deno.env.get("BREVO_SENDERS_URL") ?? BREVO_SENDERS_URL;
+}
+
+/**
+ * Whether Brevo will actually deliver mail from the configured sender.
+ *
+ * This exists because a message from an unvalidated sender is not refused at
+ * the API: Brevo answers 201 with a messageId and only discards it later, at
+ * the relay, with "Sending has been rejected because the sender you used is
+ * not valid". Nothing in the send path can see that, so a whole run reports
+ * success while every participant receives nothing -- and each of them is
+ * marked as notified, which takes them out of the queue for good.
+ *
+ * Note that Brevo treats plus-addressing as a distinct sender: validating
+ * name@example.com does not validate name+noreply@example.com.
+ *
+ * Returns null when the answer is unknown (unconfigured, network fault, or an
+ * unreadable response). Callers must not block sending on null -- refusing to
+ * mail because a status call failed would be worse than the problem.
+ */
+export async function senderIsValidated(): Promise<boolean | null> {
+  const config = readConfig();
+  if (config === null) return null;
+
+  let res: Response;
+  try {
+    res = await fetch(sendersUrl(), {
+      headers: { "api-key": config.apiKey, accept: "application/json" },
+    });
+  } catch (caught) {
+    console.error("brevo sender listing failed", caught);
+    return null;
+  }
+  if (!res.ok) {
+    console.error("brevo sender listing rejected", res.status, await res.text());
+    return null;
+  }
+
+  let body: { senders?: { email?: string; active?: boolean }[] };
+  try {
+    body = await res.json();
+  } catch (caught) {
+    console.error("brevo sender listing was not json", caught);
+    return null;
+  }
+  if (!Array.isArray(body.senders)) return null;
+
+  const wanted = config.senderEmail.toLowerCase();
+  return body.senders.some((sender) =>
+    sender.active !== false && (sender.email ?? "").toLowerCase() === wanted
+  );
+}
+
 /** Milliseconds to ADD to a UTC instant to read wall-clock time in `zone`. */
 function zoneOffsetMs(zone: string, at: Date): number {
   const parts = Object.fromEntries(

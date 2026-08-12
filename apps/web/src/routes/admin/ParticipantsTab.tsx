@@ -24,11 +24,12 @@ const MESSAGES: Record<string, string> = {
   // cron's own 5분 tick, or a concurrent admin tab. Not an error with this
   // request, just bad timing; retrying shortly clears it.
   send_in_progress: "지금 다른 발송이 이 참가자를 처리 중입니다. 잠시 후 다시 시도해주세요.",
-  // send_code (per-row): the code shown on screen no longer matches what the
-  // server holds -- someone else (cron or another tab) already reissued it.
-  // The plaintext on screen is dead; only a fresh reissue produces one that
-  // will actually work.
-  stale_code: "화면의 코드가 이미 바뀌었습니다. 코드를 다시 발급해주세요.",
+  // The From address is not one Brevo will accept. It answers 201 and then
+  // discards the message, so the send path cannot notice on its own -- the
+  // batch refuses up front rather than reporting a delivery that never
+  // happened.
+  sender_not_validated:
+    "Brevo에 인증되지 않은 발신 주소입니다. 보내면 전달되지 않으니 발신 주소를 먼저 인증해주세요.",
   // regenerate_codes (bulk, from 전체/선택 코드 재발급): refused while
   // automatic sending is armed, because resetting code_sent_at on many rows
   // while armed would hand cron a fresh batch to mail within five minutes.
@@ -73,6 +74,8 @@ interface Revealed {
   name: string;
   code: string;
   email: string | null;
+  /** False when the code was read back rather than freshly minted. */
+  justIssued: boolean;
 }
 
 interface Deleting {
@@ -129,10 +132,9 @@ export function ParticipantsTab({
     setSending(true);
     setSendError(undefined);
     try {
-      await adminData(token, "send_code", {
-        id: revealed.id,
-        code: revealed.code,
-      });
+      // Only the id: the server reads the code off the row rather than
+      // trusting what this screen happens to be showing.
+      await adminData(token, "send_code", { id: revealed.id });
       setSent(true);
     } catch (caught) {
       setSendError(
@@ -166,6 +168,47 @@ export function ParticipantsTab({
     anchor.download = "참가자_코드.csv";
     anchor.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function showCode(row: AdminParticipantRow): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const result = await adminData<{ code: string }>(token, "get_code", {
+        id: row.id,
+      });
+      setSent(false);
+      setSendError(undefined);
+      setRevealed({
+        id: row.id,
+        name: row.displayName,
+        code: result.code,
+        email: row.email,
+        justIssued: false,
+      });
+    } catch (caught) {
+      report(caught);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function downloadAllCodes(): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const result = await adminData<{ count: number; codesCsv: string }>(
+        token,
+        "list_codes",
+      );
+      downloadCodes(result.codesCsv);
+    } catch (caught) {
+      report(caught);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function reissueMany(ids: string[]): Promise<void> {
@@ -239,6 +282,7 @@ export function ParticipantsTab({
           name: draft.displayName,
           code: created.code,
           email: draft.email.trim() === "" ? null : draft.email.trim(),
+          justIssued: true,
         });
       } else {
         await adminData(token, "update_participant", {
@@ -272,6 +316,7 @@ export function ParticipantsTab({
         name: row.displayName,
         code: result.code,
         email: row.email,
+        justIssued: true,
       });
     } catch (caught) {
       report(caught);
@@ -447,7 +492,16 @@ export function ParticipantsTab({
               setConfirmingSend(true);
             }}
           >
-            선택 {selected.size}명 코드 발급 및 이메일 발송
+            선택 {selected.size}명 이메일 발송
+          </Button>
+          <Button
+            type="button"
+            variant="tertiary"
+            bordered
+            disabled={participants.length === 0 || busy}
+            onClick={() => void downloadAllCodes()}
+          >
+            코드 CSV 내려받기
           </Button>
           <Button
             type="button"
@@ -496,9 +550,9 @@ export function ParticipantsTab({
                 의 코드가 새로 발급되고,{" "}
                 <strong>이미 나눠준 코드는 즉시 무효</strong>가 됩니다.
               </p>
-              <p className="mt-md text-error">
-                새 코드는 발급 직후 내려받는 CSV에만 있습니다. 서버에는 해시만
-                남아 다시 확인할 수 없습니다.
+              <p className="mt-md">
+                새 코드가 담긴 CSV가 자동으로 내려받아집니다. 나중에 다시 필요하면
+                코드 CSV 내려받기로 언제든 받을 수 있습니다.
               </p>
             </>
           }
@@ -507,16 +561,17 @@ export function ParticipantsTab({
 
       {confirmingSend && (
         <ConfirmDialog
-          title={`${selected.size}명에게 새 코드를 이메일로 보냅니다`}
-          confirmLabel="발급 및 발송"
+          title={`${selected.size}명에게 코드를 이메일로 보냅니다`}
+          confirmLabel="발송"
           busy={busy}
           onConfirm={() => void sendSelected()}
           onCancel={() => setConfirmingSend(false)}
           body={
             <>
               <p>
-                선택한 참가자에게 새 코드를 발급해 이메일로 보냅니다. 기존 코드는
-                즉시 사용할 수 없게 됩니다.
+                선택한 참가자가 <strong>지금 가지고 있는 코드</strong>를 그대로
+                보냅니다. 코드는 바뀌지 않으므로 이미 전달한 코드도 그대로
+                유효합니다.
               </p>
               <p className="mt-md text-error">
                 자동 발송이 켜져 있으면 중복 발송을 막기 위해 작업이 거부됩니다.
@@ -527,9 +582,9 @@ export function ParticipantsTab({
       )}
 
       {issuedCsv !== null && (
-        <div className="mt-lg rounded-md border border-error bg-surface-card px-lg py-lg">
-          <p className="type-body-sm-strong text-error">
-            코드 CSV가 내려받아졌습니다. 평문 코드는 그 파일에만 있습니다.
+        <div className="mt-lg rounded-md border border-hairline bg-surface-card px-lg py-lg">
+          <p className="type-body-sm-strong text-ink">
+            새 코드가 담긴 CSV를 내려받았습니다.
           </p>
           <div className="mt-md flex flex-wrap gap-sm">
             <Button
@@ -595,6 +650,7 @@ export function ParticipantsTab({
           code={revealed.code}
           email={revealed.email}
           canSend={emailEnabled}
+          justIssued={revealed.justIssued}
           sending={sending}
           sent={sent}
           sendError={sendError}
@@ -673,6 +729,14 @@ export function ParticipantsTab({
                   }}
                 >
                   수정
+                </Button>
+                <Button
+                  type="button"
+                  variant="tertiary"
+                  className={ROW_BUTTON}
+                  onClick={() => void showCode(p)}
+                >
+                  코드 보기
                 </Button>
                 <Button
                   type="button"

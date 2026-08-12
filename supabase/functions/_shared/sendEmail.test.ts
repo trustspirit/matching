@@ -1,5 +1,10 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { fetchQuota, nextResetAt, sendCodeEmail } from "./sendEmail.ts";
+import {
+  fetchQuota,
+  nextResetAt,
+  sendCodeEmail,
+  senderIsValidated,
+} from "./sendEmail.ts";
 
 /**
  * Brevo is replaced by a local server. The env override exists only for this:
@@ -108,6 +113,65 @@ Deno.test("the real endpoint refuses an address reserved for testing", async () 
     const result = await sendCodeEmail(address, "가", "ABC123");
     assertEquals(result.kind, "failed", address);
   }
+});
+
+/** Points BREVO_SENDERS_URL at the stub and answers with `senders`. */
+async function withSenders(
+  senders: unknown,
+  run: () => Promise<void>,
+): Promise<void> {
+  await withStub(
+    () => new Response(JSON.stringify({ senders }), { status: 200 }),
+    async () => {
+      Deno.env.set("BREVO_SENDERS_URL", Deno.env.get("BREVO_API_URL")!);
+      await run();
+    },
+  );
+}
+
+Deno.test("senderIsValidated accepts the configured address", async () => {
+  await withSenders(
+    [{ id: 1, email: "noreply@example.com", active: true }],
+    async () => assertEquals(await senderIsValidated(), true),
+  );
+});
+
+Deno.test("senderIsValidated ignores casing", async () => {
+  await withSenders(
+    [{ id: 1, email: "NoReply@Example.com", active: true }],
+    async () => assertEquals(await senderIsValidated(), true),
+  );
+});
+
+Deno.test("senderIsValidated rejects a plus-address of a validated sender", async () => {
+  // Brevo treats these as separate senders, which is exactly how a working
+  // account came to reject 286 messages in a row.
+  await withSenders(
+    [{ id: 1, email: "someone@example.com", active: true }],
+    async () => {
+      Deno.env.set("BREVO_SENDER_EMAIL", "someone+noreply@example.com");
+      assertEquals(await senderIsValidated(), false);
+    },
+  );
+});
+
+Deno.test("senderIsValidated rejects a sender Brevo lists as inactive", async () => {
+  await withSenders(
+    [{ id: 1, email: "noreply@example.com", active: false }],
+    async () => assertEquals(await senderIsValidated(), false),
+  );
+});
+
+Deno.test("senderIsValidated returns null when the answer is unknown", async () => {
+  // Callers must not block sending on this: refusing to mail because a status
+  // call failed would be worse than the problem it guards against.
+  await withStub(
+    () => new Response("nope", { status: 500 }),
+    async () => {
+      Deno.env.set("BREVO_SENDERS_URL", Deno.env.get("BREVO_API_URL")!);
+      assertEquals(await senderIsValidated(), null);
+    },
+  );
 });
 
 Deno.test("fetchQuota reads the sendLimit line and the account timezone", async () => {

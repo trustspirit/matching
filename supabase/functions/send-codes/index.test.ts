@@ -78,15 +78,26 @@ async function sql(statement: string): Promise<string> {
   return new TextDecoder().decode(stdout).trim();
 }
 
+/**
+ * A distinct, well-formed code per seeded row. Codes are stored as themselves
+ * and carry a unique index, so a seed cannot hand two rows the same string --
+ * and a run mails whatever is here, so it has to look like a real code.
+ * Digits are drawn from the alphabet's 2-9, giving 64 distinct codes.
+ */
+function testCode(i: number): string {
+  const digits = "23456789";
+  return `CODE${digits[Math.floor(i / 8) % 8]}${digits[i % 8]}`;
+}
+
 Deno.test("status names who needs attention, not just how many", async () => {
   await sql("delete from participants;");
   await sql(
-    `insert into participants (name, display_name, birthdate, gender, email, code_salt, code_hash, send_attempts, send_last_error)
-     values ('확인남', '확인남', '1990-01-01', 'M', 'a@example.com', 's0', 'h0', 5, '402 quota exceeded');`,
+    `insert into participants (name, display_name, birthdate, gender, email, code, send_attempts, send_last_error)
+     values ('확인남', '확인남', '1990-01-01', 'M', 'a@example.com', '${testCode(0)}', 5, '402 quota exceeded');`,
   );
   await sql(
-    `insert into participants (name, display_name, birthdate, gender, email, code_salt, code_hash, send_attempts)
-     values ('대기녀', '대기녀', '1990-01-01', 'F', 'b@example.com', 's1', 'h1', 0);`,
+    `insert into participants (name, display_name, birthdate, gender, email, code, send_attempts)
+     values ('대기녀', '대기녀', '1990-01-01', 'F', 'b@example.com', '${testCode(1)}', 0);`,
   );
 
   const body = await (await call("status")).json();
@@ -102,8 +113,8 @@ Deno.test("the needs-attention sample is capped, not the count behind it", async
   const total = ATTENTION_SAMPLE_LIMIT + 3;
   for (let i = 0; i < total; i++) {
     await sql(
-      `insert into participants (name, display_name, birthdate, gender, email, code_salt, code_hash, send_attempts)
-       values ('막힘${i}', '막힘${i}', '1990-01-01', 'M', 'm${i}@example.com', 'sa${i}', 'ha${i}', 5);`,
+      `insert into participants (name, display_name, birthdate, gender, email, code, send_attempts)
+       values ('막힘${i}', '막힘${i}', '1990-01-01', 'M', 'm${i}@example.com', '${testCode(i)}', 5);`,
     );
   }
 
@@ -134,14 +145,23 @@ async function seed(count: number): Promise<void> {
   await sql("delete from participants;");
   for (let i = 0; i < count; i++) {
     await sql(
-      `insert into participants (name, display_name, birthdate, gender, email, code_salt, code_hash)
-       values ('사람${i}', '사람${i}', '1990-01-01', 'M', 'p${i}@example.com', 's${i}', 'h${i}');`,
+      `insert into participants (name, display_name, birthdate, gender, email, code)
+       values ('사람${i}', '사람${i}', '1990-01-01', 'M', 'p${i}@example.com', '${testCode(i)}');`,
     );
   }
 }
 
 /** Remaining credits the stubbed account reports; tests override per case. */
 let stubCredits = 1000;
+
+/**
+ * The From address Brevo will admit to knowing. Defaults to the one the
+ * function container is configured with (package.json passes it through from
+ * supabase/functions/.env) so the validation guard passes; a test that wants
+ * the guard to fire points it somewhere else.
+ */
+const SENDER = Deno.env.get("BREVO_SENDER_EMAIL") ?? "noreply@example.com";
+let stubSender = SENDER;
 
 /**
  * Stands in for Brevo. The function container reads BREVO_API_URL per request,
@@ -157,14 +177,22 @@ async function withBrevo(
   const server = Deno.serve(
     { port: 8799, signal: controller.signal, onListen: () => {} },
     (req) => {
-      // The account probe is not a send: it must not advance the call counter,
-      // or every test's "the third message fails" bookkeeping shifts by one.
-      if (new URL(req.url).pathname.endsWith("/v3/account")) {
+      // Neither probe is a send: both are answered here so they cannot
+      // advance the call counter, or every test's "the third message fails"
+      // bookkeeping shifts by one.
+      const path = new URL(req.url).pathname;
+      if (path.endsWith("/v3/account")) {
         return new Response(
           JSON.stringify({
             plan: [{ credits: stubCredits, creditsType: "sendLimit" }],
             dateTimePreferences: { timezone: "Asia/Seoul" },
           }),
+          { status: 200 },
+        );
+      }
+      if (path.endsWith("/v3/senders")) {
+        return new Response(
+          JSON.stringify({ senders: [{ id: 1, email: stubSender, active: true }] }),
           { status: 200 },
         );
       }
@@ -176,6 +204,7 @@ async function withBrevo(
     await body();
   } finally {
     stubCredits = 1000;
+    stubSender = SENDER;
     controller.abort();
     await server.finished;
   }
@@ -197,8 +226,8 @@ Deno.test("a run mails every pending participant and stamps them", async () => {
 
   assertEquals(await sql("select count(*) from participants where code_sent_at is null;"), "0");
   assertEquals(await sql("select count(*) from participants where send_claim_id is not null;"), "0");
-  // Codes are per-row salted, so uniqueness cannot be a constraint. Prove it.
-  assertEquals(await sql("select count(distinct code_hash) from participants;"), "3");
+  // A run mails the code each row already holds, so nobody's changed.
+  assertEquals(await sql("select count(distinct code) from participants;"), "3");
 });
 
 Deno.test("finishing the queue disarms so the next import is safe", async () => {
@@ -574,62 +603,54 @@ Deno.test("two concurrent runs never mail the same person twice", async () => {
   assertEquals(await sql("select count(*) from participants where code_sent_at is null;"), "0");
 });
 
-Deno.test("F3: a code-write failure records the attempt instead of retrying forever", async () => {
-  // sendOne()'s code-salt/code-hash UPDATE can fail for reasons that have
-  // nothing to do with the participant -- a DB blip, a permissions drift.
-  // Before the fix, that branch returned "failed" without ever calling
-  // recordFailure(): send_attempts stayed 0 forever, the row was reclaimed
-  // and retried every run, run() never saw an empty batch so the schedule
-  // never disarmed, and send_last_error stayed null so the admin's
-  // needs-attention list never named this participant either.
-  //
-  // Reproduced by narrowly revoking UPDATE on exactly code_salt/code_hash for
-  // service_role -- the role every Edge Function connects as -- for the
-  // duration of this test only. Every other column stays writable, so
-  // recordFailure() and release() (which the fix depends on) are unaffected;
-  // only the one write path this finding is about fails. claim_pending_codes
-  // is unaffected too: it is SECURITY DEFINER and runs as its owner, not the
-  // caller, so table grants on participants do not apply to it.
+Deno.test("a run mails the stored code and leaves it in place", async () => {
   await seed(1);
   await (await call("arm")).body?.cancel();
+  const before = await sql("select code from participants where display_name = '사람0';");
 
-  await sql("revoke update on public.participants from service_role;");
-  await sql(
-    `grant update (name, display_name, birthdate, gender, contact, email,
-       code_sent_at, send_claim_id, send_claimed_at, send_attempts, send_last_error)
-     on public.participants to service_role;`,
+  let mailed = "";
+  await withBrevo(async (req) => {
+    mailed = String((await req.json()).htmlContent)
+      .match(/font-size:24px[^>]*>([23456789ABCDEFGHJKMNPQRSTVWXYZ]{6})</)?.[1] ?? "";
+    return new Response("{}", { status: 201 });
+  }, async () => {
+    assertEquals((await (await call("run")).json()).sent, 1);
+  });
+
+  assertEquals(mailed, before);
+  assertEquals(
+    await sql("select code from participants where display_name = '사람0';"),
+    before,
   );
-  try {
-    await withBrevo(
-      () => new Response("{}", { status: 201 }),
-      async () => {
-        const body = await (await call("run")).json();
-        assertEquals(body.sent, 0);
-        assertEquals(body.failed, 1);
-        // Not "done": the row is still owed a code, it just could not be
-        // written this attempt.
-        assertEquals(body.outcome, "partial");
-      },
-    );
-  } finally {
-    // Restore exactly the blanket grant this suite's other tests depend on.
-    await sql(
-      `revoke update (name, display_name, birthdate, gender, contact, email,
-         code_sent_at, send_claim_id, send_claimed_at, send_attempts, send_last_error)
-       on public.participants from service_role;`,
-    );
-    await sql("grant update on public.participants to service_role;");
-  }
+});
 
+Deno.test("a rejected send leaves the code the participant already has", async () => {
+  await seed(1);
+  await (await call("arm")).body?.cancel();
+  const before = await sql("select code from participants where display_name = '사람0';");
+
+  await withBrevo(
+    () => new Response("nope", { status: 500 }),
+    async () => {
+      const body = await (await call("run")).json();
+      assertEquals(body.sent, 0);
+      assertEquals(body.failed, 1);
+      // Not "done": the row is still owed its mail, it just could not be
+      // delivered this attempt.
+      assertEquals(body.outcome, "partial");
+    },
+  );
+
+  // A run used to mint and write a new code before every attempt, so a
+  // failure like this replaced a working code with one that existed only in
+  // an email that never arrived.
+  assertEquals(
+    await sql("select code from participants where display_name = '사람0';"),
+    before,
+  );
   assertEquals(
     await sql("select send_attempts from participants where display_name = '사람0';"),
     "1",
-  );
-  assertEquals(
-    await sql(
-      "select send_last_error like 'code write failed%' from participants where display_name = '사람0';",
-    ),
-    "t",
   );
   // The claim must not be left behind, or the row is invisible to the next
   // run for the full five-minute stale window on top of the failure itself.
@@ -637,4 +658,30 @@ Deno.test("F3: a code-write failure records the attempt instead of retrying fore
     await sql("select send_claim_id is null from participants where display_name = '사람0';"),
     "t",
   );
+});
+
+Deno.test("a run refuses to start when the From address is not validated", async () => {
+  await seed(3);
+  await (await call("arm")).body?.cancel();
+
+  let attempted = 0;
+  stubSender = "someone-else@example.com";
+  await withBrevo(() => {
+    attempted++;
+    return new Response("{}", { status: 201 });
+  }, async () => {
+    const body = await (await call("run")).json();
+    assertEquals(body.outcome, "sender");
+    assertEquals(body.sent, 0);
+  });
+
+  // Brevo would have taken all three with a 201 and discarded them at the
+  // relay, leaving three participants stamped as notified with nothing in
+  // their inbox -- and nothing anywhere in the run to say so.
+  assertEquals(attempted, 0);
+  assertEquals(await sql("select count(*) from participants where code_sent_at is not null;"), "0");
+  // Still armed: the queue is untouched, so the next run after the address is
+  // fixed picks up exactly where this one refused.
+  assertEquals((await (await call("status")).json()).armed, true);
+  await (await call("disarm")).body?.cancel();
 });
