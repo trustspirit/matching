@@ -772,6 +772,129 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
   }
 
+  if (action === "send_selected_codes") {
+    if (await isSendArmed(db)) {
+      return jsonResponse(req, { error: "armed_conflict" }, 409);
+    }
+
+    const rawIds = (payload as { ids?: unknown }).ids;
+    const ids = Array.isArray(rawIds)
+      ? [...new Set(rawIds.filter((v): v is string => typeof v === "string" && v !== ""))]
+      : [];
+    if (ids.length === 0) {
+      return jsonResponse(req, { error: "invalid_request" }, 400);
+    }
+
+    const { data: rows, error: rowsError } = await db
+      .from("participants")
+      .select("id, display_name, email")
+      .in("id", ids)
+      .returns<{ id: string; display_name: string; email: string | null }[]>();
+    if (rowsError) {
+      console.error("send_selected_codes listing failed", rowsError);
+      return jsonResponse(req, { error: "server_error" }, 500);
+    }
+    if ((rows ?? []).length !== ids.length) {
+      return jsonResponse(req, { error: "not_found" }, 404);
+    }
+
+    const taken = await takenCodes(db);
+    if (taken === null) return jsonResponse(req, { error: "server_error" }, 500);
+
+    const failures: { id: string; displayName: string; reason: string }[] = [];
+    let sent = 0;
+
+    for (const id of ids) {
+      const participant = rows!.find((row) => row.id === id)!;
+      const claimId = crypto.randomUUID();
+      const staleBefore = new Date(Date.now() - CLAIM_STALE_MS).toISOString();
+      const { data: claimedRows, error: claimError } = await db
+        .from("participants")
+        .update({ send_claim_id: claimId, send_claimed_at: new Date().toISOString() })
+        .eq("id", id)
+        .or(`send_claim_id.is.null,send_claimed_at.lt.${staleBefore}`)
+        .select("id")
+        .returns<{ id: string }[]>();
+      if (claimError) {
+        console.error("send_selected_codes claim failed", claimError);
+        failures.push({ id, displayName: participant.display_name, reason: "server_error" });
+        continue;
+      }
+      if ((claimedRows ?? []).length === 0) {
+        failures.push({ id, displayName: participant.display_name, reason: "send_in_progress" });
+        continue;
+      }
+
+      try {
+        const minted = await mintUniqueCode(taken);
+        taken.push({ salt: minted.salt, hash: minted.hash });
+
+        const { data: updatedRows, error: updateError } = await db
+          .from("participants")
+          .update({
+            code_salt: minted.salt,
+            code_hash: minted.hash,
+            code_sent_at: null,
+            send_attempts: 0,
+            send_last_error: null,
+          })
+          .eq("id", id)
+          .eq("send_claim_id", claimId)
+          .select("id");
+        if (updateError) {
+          console.error("send_selected_codes code update failed", updateError);
+          failures.push({ id, displayName: participant.display_name, reason: "server_error" });
+          continue;
+        }
+        if ((updatedRows ?? []).length === 0) {
+          failures.push({ id, displayName: participant.display_name, reason: "stale_code" });
+          continue;
+        }
+
+        if (participant.email === null || participant.email === "") {
+          failures.push({ id, displayName: participant.display_name, reason: "no_email" });
+          continue;
+        }
+
+        const result = await sendCodeEmail(participant.email, participant.display_name, minted.code);
+        if (result.kind === "sent") {
+          const { error: stampError } = await db
+            .from("participants")
+            .update({ code_sent_at: new Date().toISOString(), send_claim_id: null, send_claimed_at: null })
+            .eq("id", id)
+            .eq("send_claim_id", claimId);
+          if (stampError) {
+            console.error("send_selected_codes stamp failed", stampError);
+            failures.push({ id, displayName: participant.display_name, reason: "stamp_failed" });
+          } else {
+            sent++;
+          }
+        } else {
+          const reason = result.kind === "disabled"
+            ? "email_disabled"
+            : result.kind === "quota"
+            ? "quota"
+            : result.kind === "throttled"
+            ? "throttled"
+            : result.reason;
+          await db
+            .from("participants")
+            .update({ send_last_error: reason })
+            .eq("id", id)
+            .eq("send_claim_id", claimId);
+          failures.push({ id, displayName: participant.display_name, reason });
+        }
+      } catch (error) {
+        console.error("send_selected_codes failed", error);
+        failures.push({ id, displayName: participant.display_name, reason: "server_error" });
+      } finally {
+        await releaseSendClaim(db, id, claimId);
+      }
+    }
+
+    return jsonResponse(req, { sent, failed: failures.length, failures });
+  }
+
   if (action === "regenerate_codes") {
     // F7: this sets code_sent_at null for every target, which makes each one
     // claimable immediately. If automatic sending is armed, the next cron

@@ -631,6 +631,79 @@ Deno.test("regenerates everyone when no ids are given", async () => {
   assertEquals((await participantLogin(first[0], code)).status, 200);
 });
 
+Deno.test("an imported new participant's CSV code works in lookup", async () => {
+  await ensureAbsent("신규임포트");
+  const row =
+    "1부,,소극장,1조,신규임포트,1990-01-01,010-2222-3333,new-import@example.com,표여,1999-05-06,010-0000-0002,b@example.com";
+  const res = await importCsv([row]);
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  const codeRow = body.codesCsv
+    .split("\n")
+    .find((line: string) => line.startsWith("신규임포트,"));
+  assert(codeRow, "new participant code row missing");
+  const code = codeRow.split(",").at(-1)!;
+  assertEquals((await participantLogin("신규임포트", code)).status, 200);
+});
+
+Deno.test("selected code reissue keeps the returned CSV code valid", async () => {
+  await seed();
+  const { maleId, femaleId } = await ids();
+  const maleBefore = (await (await call("regenerate_code", { id: maleId })).json()).code;
+
+  const res = await call("regenerate_codes", { ids: [femaleId] });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  const codeRow = body.codesCsv
+    .split("\n")
+    .find((line: string) => line.startsWith("표여,"));
+  assert(codeRow, "selected participant code row missing");
+  const femaleCode = codeRow.split(",").at(-1)!;
+
+  assertEquals((await participantLogin("표여", femaleCode)).status, 200);
+  assertEquals((await participantLogin("표남", maleBefore)).status, 200);
+});
+
+Deno.test("send_selected_codes sends only the selected participants", async () => {
+  await seed();
+  const { maleId, femaleId } = await ids();
+  const maleBefore = (await (await call("regenerate_code", { id: maleId })).json()).code;
+  await armSending(false);
+
+  const sent: { to: string; code: string }[] = [];
+  await withBrevo(async (req) => {
+    const body = await req.json();
+    const html = String(body.htmlContent);
+    const code = html.match(/font-size:24px[^>]*>([23456789ABCDEFGHJKMNPQRSTVWXYZ]{6})</)?.[1];
+    sent.push({ to: body.to[0].email, code: code ?? "" });
+    return new Response(JSON.stringify({ messageId: "selected" }), { status: 201 });
+  }, async () => {
+    const res = await call("send_selected_codes", { ids: [femaleId] });
+    assertEquals(res.status, 200);
+    const body = await res.json();
+    assertEquals(body.sent, 1);
+    assertEquals(body.failed, 0);
+  });
+
+  assertEquals(sent.length, 1);
+  assertEquals(sent[0].to, "b@example.com");
+  assertEquals((await participantLogin("표여", sent[0].code)).status, 200);
+  assertEquals((await participantLogin("표남", maleBefore)).status, 200);
+});
+
+Deno.test("send_selected_codes rejects while automatic sending is armed", async () => {
+  await seed();
+  const { femaleId } = await ids();
+  await armSending(true);
+  try {
+    const res = await call("send_selected_codes", { ids: [femaleId] });
+    assertEquals(res.status, 409);
+    assertEquals((await res.json()).error, "armed_conflict");
+  } finally {
+    await armSending(false);
+  }
+});
+
 Deno.test("rejects an empty id list", async () => {
   const res = await call("regenerate_codes", { ids: [] });
   assertEquals(res.status, 400);

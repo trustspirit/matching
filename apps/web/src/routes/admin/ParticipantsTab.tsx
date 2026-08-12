@@ -33,6 +33,8 @@ const MESSAGES: Record<string, string> = {
   // automatic sending is armed, because resetting code_sent_at on many rows
   // while armed would hand cron a fresh batch to mail within five minutes.
   armed_conflict: "자동 발송이 켜져 있는 동안은 일괄 재발급할 수 없습니다. 먼저 자동 발송을 꺼주세요.",
+  quota: "발송 대기열에 등록되었습니다. 한도가 회복되면 자동 발송됩니다.",
+  throttled: "발송 대기열에 등록되었습니다. 잠시 후 자동 발송됩니다.",
   network_error: "연결에 실패했습니다. 다시 시도해주세요.",
   server_error: "서버 오류가 발생했습니다.",
 };
@@ -78,6 +80,12 @@ interface Deleting {
   impact: ImpactRow[];
 }
 
+interface SelectedSendResult {
+  sent: number;
+  failed: number;
+  failures: { id: string; displayName: string; reason: string }[];
+}
+
 interface ParticipantsTabProps {
   token: string;
   participants: AdminParticipantRow[];
@@ -99,7 +107,9 @@ export function ParticipantsTab({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // null = no dialog, otherwise the ids to reissue (empty array means everyone).
   const [confirming, setConfirming] = useState<string[] | null>(null);
+  const [confirmingSend, setConfirmingSend] = useState(false);
   const [issuedCsv, setIssuedCsv] = useState<string | null>(null);
+  const [selectedSendResult, setSelectedSendResult] = useState<SelectedSendResult | null>(null);
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [sendError, setSendError] = useState<string | undefined>();
@@ -173,6 +183,28 @@ export function ParticipantsTab({
       setSelected(new Set());
       setIssuedCsv(result.codesCsv);
       downloadCodes(result.codesCsv);
+      onChanged();
+    } catch (caught) {
+      report(caught);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendSelected(): Promise<void> {
+    if (busy || selected.size === 0) return;
+    setBusy(true);
+    setError(undefined);
+    setSelectedSendResult(null);
+    try {
+      const result = await adminData<SelectedSendResult>(
+        token,
+        "send_selected_codes",
+        { ids: [...selected] },
+      );
+      setConfirmingSend(false);
+      setSelected(new Set());
+      setSelectedSendResult(result);
       onChanged();
     } catch (caught) {
       report(caught);
@@ -407,6 +439,18 @@ export function ParticipantsTab({
           </Button>
           <Button
             type="button"
+            variant="caution"
+            bordered
+            disabled={selected.size === 0}
+            onClick={() => {
+              setSelectedSendResult(null);
+              setConfirmingSend(true);
+            }}
+          >
+            선택 {selected.size}명 코드 발급 및 이메일 발송
+          </Button>
+          <Button
+            type="button"
             variant="tertiary"
             bordered
             disabled={participants.length === 0}
@@ -461,6 +505,27 @@ export function ParticipantsTab({
         />
       )}
 
+      {confirmingSend && (
+        <ConfirmDialog
+          title={`${selected.size}명에게 새 코드를 이메일로 보냅니다`}
+          confirmLabel="발급 및 발송"
+          busy={busy}
+          onConfirm={() => void sendSelected()}
+          onCancel={() => setConfirmingSend(false)}
+          body={
+            <>
+              <p>
+                선택한 참가자에게 새 코드를 발급해 이메일로 보냅니다. 기존 코드는
+                즉시 사용할 수 없게 됩니다.
+              </p>
+              <p className="mt-md text-error">
+                자동 발송이 켜져 있으면 중복 발송을 막기 위해 작업이 거부됩니다.
+              </p>
+            </>
+          }
+        />
+      )}
+
       {issuedCsv !== null && (
         <div className="mt-lg rounded-md border border-error bg-surface-card px-lg py-lg">
           <p className="type-body-sm-strong text-error">
@@ -482,6 +547,41 @@ export function ParticipantsTab({
               닫기
             </Button>
           </div>
+        </div>
+      )}
+
+      {selectedSendResult !== null && (
+        <div className="mt-lg rounded-md border border-hairline bg-surface-card px-lg py-lg">
+          {(() => {
+            const queued = selectedSendResult.failures.filter((failure) =>
+              failure.reason === "quota" || failure.reason === "throttled"
+            ).length;
+            const failed = selectedSendResult.failed - queued;
+            return (
+              <p className="type-body-sm-strong text-ink">
+                {selectedSendResult.sent}명에게 발송했습니다.
+                {queued > 0 && ` ${queued}명은 발송 대기열에 등록되었습니다.`}
+                {failed > 0 && ` ${failed}명은 발송하지 못했습니다.`}
+              </p>
+            );
+          })()}
+          {selectedSendResult.failures.length > 0 && (
+            <ul className="type-body-sm mt-sm list-disc pl-lg text-error">
+              {selectedSendResult.failures.map((failure) => (
+                <li key={failure.id}>
+                  {failure.displayName}: {MESSAGES[failure.reason] ?? failure.reason}
+                </li>
+              ))}
+            </ul>
+          )}
+          <Button
+            type="button"
+            variant="tertiary"
+            className="mt-md"
+            onClick={() => setSelectedSendResult(null)}
+          >
+            닫기
+          </Button>
         </div>
       )}
 
