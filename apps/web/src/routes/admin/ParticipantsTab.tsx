@@ -709,7 +709,11 @@ export function ParticipantsTab({
                 {/* Takes the leftover width so a long address shortens itself
                     instead of pushing the buttons off the line. */}
                 <span className="flex min-w-0 items-center gap-xs md:flex-1">
-                  <span className="truncate">{p.email ?? ""}</span>
+                  {/* min-w-0 as well as truncate: a flex child's default
+                      min-width is its content, so without this the address
+                      refuses to shrink, the whole row runs out of space, and
+                      the shrink-0 badge beside it spills onto the buttons. */}
+                  <span className="min-w-0 truncate">{p.email ?? ""}</span>
                   {p.email !== null && p.email !== "" &&
                     p.codeSentAt === null && (
                     <span className="type-caption-md shrink-0 rounded-sm bg-secondary-bg px-xs py-xxs text-caution">
@@ -718,7 +722,7 @@ export function ParticipantsTab({
                   )}
                 </span>
               </div>
-              <span className="flex flex-wrap gap-xs md:ml-auto md:flex-nowrap md:gap-0">
+              <span className="flex flex-wrap gap-xs md:ml-auto md:flex-nowrap md:gap-0 md:shrink-0">
                 <Button
                   type="button"
                   variant="tertiary"

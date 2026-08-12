@@ -721,6 +721,10 @@ Deno.test("a failed send leaves the participant's code alone", async () => {
   await seed();
   const { femaleId } = await ids();
   await armSending(false);
+  // An earlier test in this file already mailed this row successfully, and a
+  // re-import keeps code_sent_at when the code is unchanged. Clear it so the
+  // assertion below is about this send and not that one.
+  await sql(`update participants set code_sent_at = null where id = '${femaleId}';`);
   const before = await sql(`select code from participants where id = '${femaleId}';`);
 
   await withBrevo(
@@ -751,6 +755,7 @@ Deno.test("send_selected_codes refuses an unvalidated sender before sending anyt
   await seed();
   const { femaleId } = await ids();
   await armSending(false);
+  await sql(`update participants set code_sent_at = null where id = '${femaleId}';`);
 
   let attempted = 0;
   stubSender = "someone-else@example.com";

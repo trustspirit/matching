@@ -153,7 +153,11 @@ export function Admin() {
   const hasData = matches.length > 0 || participants.length > 0;
 
   return (
-    <main className="mx-auto flex w-full max-w-[900px] flex-col px-lg py-xxl">
+    // Wider from lg because the participant row is a real table: eight columns
+    // and four per-row actions need about 1050px before the email column is
+    // squeezed out of existence. 900px stays the cap below lg, where the row is
+    // a stacked card and the extra width would only stretch the reading line.
+    <main className="mx-auto flex w-full max-w-[900px] flex-col px-lg py-xxl lg:max-w-[1200px]">
       <h1 className="type-heading-xl text-ink">매칭 데이터 관리</h1>
 
       <div className="mt-xl flex flex-wrap items-center gap-xs">

@@ -129,7 +129,10 @@ Deno.test("keeps existing codes when re-uploading to add a team", async () => {
   const withTeam = ROW_A.replace(",3조,", ",7조,");
   const second = await (await upload(csv(withTeam))).json();
   assertEquals(second.participants.created, 0);
-  assertEquals(codeFor(second.codesCsv, "임포트남"), "기존 코드 유지");
+  // The CSV carries this participant's existing code rather than a "kept"
+  // placeholder: codes are readable now, so a download after any import is a
+  // complete list instead of one covering only the rows that changed.
+  assertEquals(codeFor(second.codesCsv, "임포트남"), originalCode);
 
   const login = await lookup("임포트남", originalCode);
   assertEquals(login.status, 200);
@@ -196,7 +199,7 @@ Deno.test("re-import resets the send queue, but only clears code_sent_at and the
   // No regenerateCodes: the code is kept, so this participant was already
   // notified about the code they still have and must not be queued again.
   const kept = await (await upload(csv(ROW_A))).json();
-  assertEquals(codeFor(kept.codesCsv, "임포트남"), "기존 코드 유지");
+  assertEquals(codeFor(kept.codesCsv, "임포트남"), latestMaleCode);
   assertEquals(
     await sql("select send_attempts from participants where name = '임포트남';"),
     "0",
@@ -262,7 +265,7 @@ Deno.test("re-import with an unchanged code leaves an in-flight send claim alone
   // guards a send that is genuinely in progress for the code the participant
   // still has -- it must not be invalidated out from under that run.
   const reimported = await (await upload(csv(ROW_A))).json();
-  assertEquals(codeFor(reimported.codesCsv, "임포트남"), "기존 코드 유지");
+  assertEquals(codeFor(reimported.codesCsv, "임포트남"), latestMaleCode);
 
   assertEquals(
     await sql("select send_claim_id from participants where name = '임포트남';"),

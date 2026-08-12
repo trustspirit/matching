@@ -86,7 +86,10 @@ async function sql(statement: string): Promise<string> {
  */
 function testCode(i: number): string {
   const digits = "23456789";
-  return `CODE${digits[Math.floor(i / 8) % 8]}${digits[i % 8]}`;
+  // TEST, not CODE: O is one of the ambiguous letters the alphabet leaves out,
+  // so a code containing it would not survive the validator or the assertions
+  // that scrape a code out of a sent message.
+  return `TEST${digits[Math.floor(i / 8) % 8]}${digits[i % 8]}`;
 }
 
 Deno.test("status names who needs attention, not just how many", async () => {
@@ -544,12 +547,12 @@ Deno.test("a claim held by a dead run is reclaimed after five minutes", async ()
   );
 });
 
-Deno.test("re-minting a code cancels the send that already claimed it", async () => {
+Deno.test("a claim that moves mid-flight stops the run from stamping the row", async () => {
   await seed(1);
   await (await call("arm")).body?.cancel();
 
-  // The claim moves while the message is in flight -- exactly what a
-  // concurrent reissue does. Awaiting inside the handler makes this
+  // The claim moves while the message is in flight -- what a concurrent
+  // reissue or admin send does. Awaiting inside the handler makes this
   // deterministic: the write lands before the send returns, so the stamp that
   // follows is guaranteed to find a claim that is no longer ours.
   await withBrevo(
