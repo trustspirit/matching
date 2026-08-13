@@ -66,10 +66,25 @@ export function isoToKstLocal(iso: string): string {
 
 /** "8월 14일 오후 9:50", for telling a participant when to come back. */
 export function formatKst(iso: string): string {
+  return format(iso, false);
+}
+
+/**
+ * The same, with the year. Only the admin screen wants it: the organiser is
+ * checking a setting and a date left on the wrong year would otherwise look
+ * exactly like a correct one, while a participant already knows what day they
+ * are attending.
+ */
+export function formatKstWithYear(iso: string): string {
+  return format(iso, true);
+}
+
+function format(iso: string, withYear: boolean): string {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return "";
   return new Intl.DateTimeFormat("ko-KR", {
     timeZone: "Asia/Seoul",
+    year: withYear ? "numeric" : undefined,
     month: "long",
     day: "numeric",
     hour: "numeric",

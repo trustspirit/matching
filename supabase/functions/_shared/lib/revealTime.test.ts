@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   formatKst,
+  formatKstWithYear,
   isoToKstLocal,
   kstLocalToIso,
   revealKey,
@@ -65,7 +66,13 @@ describe("formatKst", () => {
     expect(formatKst("2026-08-14T12:50:00.000Z")).toContain("9:50");
   });
 
+  it("leaves the year out for participants and keeps it for the organiser", () => {
+    expect(formatKst("2026-08-14T12:50:00.000Z")).not.toContain("2026");
+    expect(formatKstWithYear("2026-08-14T12:50:00.000Z")).toContain("2026");
+  });
+
   it("returns an empty string rather than throwing on junk", () => {
     expect(formatKst("nope")).toBe("");
+    expect(formatKstWithYear("nope")).toBe("");
   });
 });

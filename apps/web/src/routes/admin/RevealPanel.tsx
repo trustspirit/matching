@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { formatKst, isoToKstLocal } from "@shared/revealTime.ts";
+import { formatKstWithYear, isoToKstLocal } from "@shared/revealTime.ts";
 import type { Session } from "@shared/types.ts";
 import { adminData, ApiError } from "../../api/client";
 import { Button } from "../../design/Button";
@@ -96,7 +96,7 @@ export function RevealPanel({ token }: { token: string }) {
         <p className="type-body-sm">
           상대 공개 ·{" "}
           {SESSIONS.map((s) =>
-            `${s} ${saved[s] === null ? "미설정" : formatKst(saved[s])}`
+            `${s} ${saved[s] === null ? "미설정" : formatKstWithYear(saved[s])}`
           ).join(" · ")}
         </p>
         <div className="ml-auto">
