@@ -12,6 +12,7 @@ import { Select } from "../../design/Select";
 import { categoryColor, categoryValues } from "../../lib/categoryColor";
 import { nameMatches } from "../../lib/nameFilter";
 import { ParticipantPicker } from "./ParticipantPicker";
+import { RevealPanel } from "./RevealPanel";
 
 const MESSAGES: Record<string, string> = {
   invalid_request: "입력값을 확인해주세요.",
@@ -300,6 +301,10 @@ export function MatchesTab({
       {error !== undefined && (
         <p role="alert" className="type-body-sm mt-md text-error">{error}</p>
       )}
+
+      {/* Sits with the schedule rather than with the participants: it is a
+          property of the session, like its time and venue. */}
+      <RevealPanel token={token} />
 
       {editing === "new" && editor("new")}
 

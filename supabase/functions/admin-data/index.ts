@@ -6,6 +6,7 @@ import { mintUniqueCode } from "../_shared/mintCode.ts";
 import { buildCodesCsv } from "../_shared/lib/csv.ts";
 import { sendCodeEmail, senderIsValidated } from "../_shared/sendEmail.ts";
 import { normalizeName } from "../_shared/lib/name.ts";
+import { kstLocalToIso, revealKey } from "../_shared/lib/revealTime.ts";
 import {
   bearerToken,
   issueSession,
@@ -991,6 +992,60 @@ Deno.serve(async (req: Request): Promise<Response> => {
       return jsonResponse(req, { error: "not_found" }, 404);
     }
     return jsonResponse(req, { code });
+  }
+
+  if (action === "get_reveal_times") {
+    const { data, error } = await db
+      .from("app_config")
+      .select("key, value")
+      .in("key", [revealKey("1부"), revealKey("2부")])
+      .returns<{ key: string; value: string }[]>();
+    if (error) {
+      console.error("get_reveal_times failed", error);
+      return jsonResponse(req, { error: "server_error" }, 500);
+    }
+    const byKey = new Map((data ?? []).map((row) => [row.key, row.value]));
+    return jsonResponse(req, {
+      revealAt: {
+        "1부": byKey.get(revealKey("1부")) ?? null,
+        "2부": byKey.get(revealKey("2부")) ?? null,
+      },
+    });
+  }
+
+  if (action === "set_reveal_times") {
+    const body = (payload as { revealAt?: Record<string, unknown> }).revealAt;
+    if (typeof body !== "object" || body === null) {
+      return jsonResponse(req, { error: "invalid_request" }, 400);
+    }
+
+    const rows: { key: string; value: string }[] = [];
+    for (const session of ["1부", "2부"] as Session[]) {
+      const raw = body[session];
+      if (typeof raw !== "string" || raw === "") {
+        return jsonResponse(req, { error: "invalid_request" }, 400);
+      }
+      // The screen sends a Seoul wall-clock string with no zone on it. Turning
+      // it into an instant here, with the offset spelled out, is what stops
+      // the organiser's own timezone from deciding when a session opens.
+      const iso = kstLocalToIso(raw);
+      if (iso === null) return jsonResponse(req, { error: "invalid_request" }, 400);
+      rows.push({ key: revealKey(session), value: iso });
+    }
+
+    const { error } = await db
+      .from("app_config")
+      .upsert(rows, { onConflict: "key" });
+    if (error) {
+      console.error("set_reveal_times failed", error);
+      return jsonResponse(req, { error: "server_error" }, 500);
+    }
+    return jsonResponse(req, {
+      revealAt: {
+        "1부": rows[0].value,
+        "2부": rows[1].value,
+      },
+    });
   }
 
   // One participant's current code, for the reveal control on their row.

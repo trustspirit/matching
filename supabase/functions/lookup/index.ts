@@ -9,11 +9,51 @@ import {
   recordAttempt,
 } from "../_shared/rateLimit.ts";
 import { isValidCode, normalizeCode } from "../_shared/lib/code.ts";
-import type { LookupResponse, MatchView } from "../_shared/lib/types.ts";
+import { revealKey } from "../_shared/lib/revealTime.ts";
+import type {
+  LookupResponse,
+  MatchView,
+  Session,
+} from "../_shared/lib/types.ts";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 interface ParticipantRow {
   id: string;
   display_name: string;
+}
+
+/**
+ * When each session's partner information opens, keyed by session.
+ *
+ * A session with no configured instant is open: the gate is something an
+ * organiser switches on by setting a time, so an absent row must not black out
+ * a screen nobody meant to gate. An unreadable table is the opposite case and
+ * is handled by the caller -- see readRevealTimes' return of null.
+ */
+async function readRevealTimes(
+  db: SupabaseClient,
+): Promise<Map<string, Date> | null> {
+  const { data, error } = await db
+    .from("app_config")
+    .select("key, value")
+    .in("key", [revealKey("1부"), revealKey("2부")])
+    .returns<{ key: string; value: string }[]>();
+  if (error) {
+    console.error("reveal time lookup failed", error);
+    return null;
+  }
+  const times = new Map<string, Date>();
+  for (const row of data ?? []) {
+    const at = new Date(row.value);
+    // A malformed value is worse than no value: it would silently resolve to
+    // "already open" on every comparison. Treat it as unreadable instead.
+    if (Number.isNaN(at.getTime())) {
+      console.error("reveal time is not a date", row.key, row.value);
+      return null;
+    }
+    times.set(row.key, at);
+  }
+  return times;
 }
 
 interface MatchRow {
@@ -102,15 +142,33 @@ Deno.serve(async (req: Request): Promise<Response> => {
     await recordAttempt(db, ipHash, true, PARTICIPANT_POLICY);
   }
 
-  const matches: MatchView[] = (rows ?? []).map((row) => ({
-    session: row.session as MatchView["session"],
-    timeRange: row.time_range,
-    arriveBy: row.arrive_by,
-    venue: row.venue,
-    team: row.team,
-    partnerTeam: row.partner_team,
-    partnerName: row.partner_name,
-  }));
+  // Read once for the whole response rather than per match, and taken before
+  // the loop so every card in one response is judged against the same instant.
+  const revealTimes = await readRevealTimes(db);
+  const now = Date.now();
+
+  const matches: MatchView[] = (rows ?? []).map((row) => {
+    const session = row.session as Session;
+    const revealAt = revealTimes?.get(revealKey(session)) ?? null;
+    // An unreadable config withholds too, and says nothing about when: showing
+    // a partner early cannot be undone, while a participant who meets the
+    // placeholder for a moment can simply look again.
+    const locked = revealTimes === null ||
+      (revealAt !== null && now < revealAt.getTime());
+
+    return {
+      session,
+      timeRange: row.time_range,
+      arriveBy: row.arrive_by,
+      venue: row.venue,
+      // The viewer's own 조 is theirs to see: it is on their badge and their
+      // table, and it identifies nobody else.
+      team: row.team,
+      partnerTeam: locked ? null : row.partner_team,
+      partnerName: locked ? null : row.partner_name,
+      revealAt: locked ? revealAt?.toISOString() ?? null : null,
+    };
+  });
 
   const response: LookupResponse = {
     displayName: matched.display_name,

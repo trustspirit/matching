@@ -39,6 +39,14 @@ values
   ('이승준', '이승준', '1998-12-14', 'M', '010-8521-0025', 'skyjune98@example.com',
    '5조', 'TESTAC');
 
+-- Development sees an event that already started, so every partner card is
+-- visible without anyone touching the schedule. 20260813000002 seeds the real
+-- 2026-08-14 instants; overriding them here keeps `supabase db reset` from
+-- leaving a local database where every card is withheld.
+update public.app_config
+   set value = '2020-01-01T21:50:00+09:00'
+ where key in ('reveal_at_1부', 'reveal_at_2부');
+
 -- Case 1: ordinary 1부 pair with a team assigned
 insert into public.matches (session, time_range, arrive_by, venue, male_id, female_id)
 select '1부', '21:50~22:20', '21:50', '소극장', m.id, f.id

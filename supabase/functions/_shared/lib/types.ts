@@ -20,7 +20,18 @@ export interface MatchView {
    * name reads as the partner's whichever one it actually is.
    */
   partnerTeam: string | null;
-  partnerName: string;
+  /**
+   * Null until the session opens. The server withholds it rather than the
+   * screen hiding it: a participant who opens the network tab before 9:50pm
+   * must not find their partner's name sitting in the response.
+   */
+  partnerName: string | null;
+  /**
+   * When this session's partner becomes visible, as an ISO instant. Null once
+   * that moment has passed, so a card either names the partner or says when it
+   * will -- never both, and never neither.
+   */
+  revealAt: string | null;
 }
 
 export interface LookupResponse {

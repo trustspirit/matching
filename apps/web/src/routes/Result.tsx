@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { formatKst } from "@shared/revealTime.ts";
 import type { LookupResponse, MatchView } from "@shared/types.ts";
 import { Badge } from "../design/Badge";
 import { Button } from "../design/Button";
@@ -21,13 +22,45 @@ function InfoRow({ label, value, muted = false }: {
   );
 }
 
+/**
+ * Stands in for something the server did not send yet. The blur is the whole
+ * point: an empty space reads as "no partner assigned", while a shape you
+ * cannot quite make out reads as "there is something here, later".
+ *
+ * aria-hidden because there is nothing to read -- the sentence under the card
+ * says the same thing in words, which is what a screen reader should get.
+ */
+function Withheld({ size }: { size: "name" | "row" }) {
+  return (
+    <span
+      aria-hidden
+      className={`select-none text-ash blur-[6px] ${
+        size === "name" ? "type-display-lg" : "type-heading-md"
+      }`}
+    >
+      ●●●
+    </span>
+  );
+}
+
 function MatchCard({ match }: { match: MatchView }) {
+  // The server sends no name at all until the session opens, so this is the
+  // only signal the screen has -- and the only one it needs.
+  const locked = match.partnerName === null;
+
   return (
     <Card>
       <Badge>{match.session}</Badge>
 
       <p className="type-caption-md mt-xl text-mute">상대방</p>
-      <h2 className="type-display-lg mt-xxs text-ink">{match.partnerName}</h2>
+      {locked
+        ? (
+          <h2 className="mt-xxs">
+            <Withheld size="name" />
+            <span className="sr-only">아직 공개되지 않았습니다</span>
+          </h2>
+        )
+        : <h2 className="type-display-lg mt-xxs text-ink">{match.partnerName}</h2>}
 
       <hr className="my-xl border-0 border-t border-hairline" />
 
@@ -37,15 +70,32 @@ function MatchCard({ match }: { match: MatchView }) {
       <div className="flex flex-col gap-md">
         <InfoRow label="시간" value={match.timeRange} />
         <InfoRow label="장소" value={match.venue} />
-        <InfoRow
-          label="조"
-          value={match.partnerTeam ?? "조 배정 예정"}
-          muted={match.partnerTeam === null}
-        />
+        {/* Time and place stay visible while the partner is hidden: they are
+            what gets someone to the right room on time, and they give away
+            nobody. */}
+        {locked
+          ? (
+            <div className="flex items-baseline justify-between gap-lg">
+              <span className="type-caption-md text-mute">조</span>
+              <Withheld size="row" />
+            </div>
+          )
+          : (
+            <InfoRow
+              label="조"
+              value={match.partnerTeam ?? "조 배정 예정"}
+              muted={match.partnerTeam === null}
+            />
+          )}
       </div>
 
       <p className="type-body-sm-strong mt-xl rounded-md bg-surface-card px-lg py-md text-ink">
-        {match.arriveBy}까지 {match.venue}에 도착해주세요.
+        {locked
+          ? match.revealAt === null
+            ? "상대방은 아직 공개 전입니다. 잠시 후 다시 조회해주세요."
+            : `상대방은 ${formatKst(match.revealAt)}에 공개됩니다. ` +
+              "그때 다시 조회해주세요."
+          : `${match.arriveBy}까지 ${match.venue}에 도착해주세요.`}
       </p>
     </Card>
   );
@@ -91,7 +141,7 @@ export function Result() {
           )
           : result.matches.map((match) => (
             <MatchCard
-              key={`${match.session}-${match.venue}-${match.partnerName}`}
+              key={`${match.session}-${match.venue}`}
               match={match}
             />
           ))}

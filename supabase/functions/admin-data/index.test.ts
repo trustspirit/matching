@@ -374,6 +374,97 @@ async function participantLogin(name: string, code: string): Promise<Response> {
   });
 }
 
+/** Moves a session's reveal instant relative to now, in minutes. */
+async function setRevealOffset(session: string, minutes: number): Promise<void> {
+  await sql(
+    `insert into app_config (key, value)
+     values ('reveal_at_${session}', (now() + interval '${minutes} minutes')::text)
+     on conflict (key) do update set value = excluded.value;`,
+  );
+}
+
+Deno.test("withholds the partner until the session opens", async () => {
+  await seed();
+  const { maleId } = await ids();
+  const code = (await (await call("regenerate_code", { id: maleId })).json()).code;
+
+  await setRevealOffset("1부", 30);
+  const locked = await (await participantLogin("표남", code)).json();
+  assertEquals(locked.matches.length, 1);
+  // The name is absent from the payload, not merely hidden by the screen:
+  // this is the assertion the whole feature rests on.
+  assertEquals(locked.matches[0].partnerName, null);
+  assertEquals(locked.matches[0].partnerTeam, null);
+  assert(!JSON.stringify(locked).includes("표여"), "partner name leaked in the response");
+  // Time and place still come through -- they are what gets someone to the
+  // right room, and they identify nobody.
+  assertEquals(locked.matches[0].venue, "소극장");
+  assertEquals(locked.matches[0].session, "1부");
+  assert(typeof locked.matches[0].revealAt === "string");
+
+  await setRevealOffset("1부", -1);
+  const open = await (await participantLogin("표남", code)).json();
+  assertEquals(open.matches[0].partnerName, "표여");
+  assertEquals(open.matches[0].partnerTeam, "3조");
+  assertEquals(open.matches[0].revealAt, null);
+});
+
+Deno.test("opens each session on its own schedule", async () => {
+  await seed();
+  const { maleId } = await ids();
+  const code = (await (await call("regenerate_code", { id: maleId })).json()).code;
+
+  // 1부 has started, 2부 has not. A participant in both must see one partner
+  // and not the other.
+  await setRevealOffset("1부", -1);
+  await setRevealOffset("2부", 30);
+  const body = await (await participantLogin("표남", code)).json();
+  const first = body.matches.find((m: { session: string }) => m.session === "1부");
+  assertEquals(first.partnerName, "표여");
+});
+
+Deno.test("the viewer's own 조 stays visible while the partner is hidden", async () => {
+  await seed();
+  const { maleId } = await ids();
+  const code = (await (await call("regenerate_code", { id: maleId })).json()).code;
+
+  await setRevealOffset("1부", 30);
+  const body = await (await participantLogin("표남", code)).json();
+  // 조 is on the participant's own record. Hiding it would tell them nothing
+  // about anyone else and would leave them unable to find their table.
+  assertEquals(body.matches[0].team, "3조");
+});
+
+Deno.test("set_reveal_times reads its input as Seoul time", async () => {
+  const res = await call("set_reveal_times", {
+    revealAt: { "1부": "2026-08-14T21:50", "2부": "2026-08-14T22:40" },
+  });
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  // 21:50 in Seoul is 12:50 UTC. Anything else means a timezone crept in.
+  assertEquals(new Date(body.revealAt["1부"]).toISOString(), "2026-08-14T12:50:00.000Z");
+  assertEquals(new Date(body.revealAt["2부"]).toISOString(), "2026-08-14T13:40:00.000Z");
+
+  const read = await (await call("get_reveal_times")).json();
+  assertEquals(read.revealAt["1부"], body.revealAt["1부"]);
+});
+
+Deno.test("set_reveal_times rejects a value it cannot place on a clock", async () => {
+  for (const bad of [{ "1부": "", "2부": "2026-08-14T22:40" }, {
+    "1부": "2026-08-14",
+    "2부": "2026-08-14T22:40",
+  }, { "1부": "2026-08-14T21:50" }]) {
+    const res = await call("set_reveal_times", { revealAt: bad });
+    assertEquals(res.status, 400);
+    assertEquals((await res.json()).error, "invalid_request");
+  }
+
+  // Leave the event open for the rest of the file, the way seed.sql sets it
+  // up: every test below reads a partner name out of a lookup response.
+  await setRevealOffset("1부", -1);
+  await setRevealOffset("2부", -1);
+});
+
 Deno.test("creates a participant and the returned code works", async () => {
   await ensureAbsent("신규남");
   const res = await call("create_participant", {

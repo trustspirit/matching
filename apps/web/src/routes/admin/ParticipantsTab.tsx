@@ -743,7 +743,7 @@ export function ParticipantsTab({
                   className={ROW_BUTTON}
                   onClick={() => void showCode(p)}
                 >
-                  코드 보기
+                  코드
                 </Button>
                 <Button
                   type="button"
@@ -751,7 +751,7 @@ export function ParticipantsTab({
                   className={ROW_BUTTON}
                   onClick={() => void reissue(p)}
                 >
-                  코드 재발급
+                  재발급
                 </Button>
                 <Button
                   type="button"
